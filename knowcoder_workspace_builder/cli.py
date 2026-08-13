@@ -14,10 +14,17 @@ import httpx
 from openai import OpenAI
 
 from knowcoder_workspace_builder import __version__
-from knowcoder_workspace_builder.config import apply_settings, default_config_path, load_settings
+from knowcoder_workspace_builder.config import (
+    apply_settings,
+    default_config_path,
+    load_settings,
+)
 from knowcoder_workspace_builder.mcp.server import create_server
-from knowcoder_workspace_builder.runtime.retry_policy import call_with_retries, is_external_api_error
-
+from knowcoder_workspace_builder.runtime.retry_policy import (
+    call_with_retries,
+    is_external_api_error,
+)
+from knowcoder_workspace_builder.storage.project import default_project_root
 
 EXPECTED_MCP_TOOLS = {
     "find_workspace_tasks",
@@ -34,7 +41,11 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
     subcommands = parser.add_subparsers(dest="command")
     serve = subcommands.add_parser("serve", help="Run the stdio MCP Server")
-    serve.add_argument("project", nargs="?", default=os.getcwd())
+    serve.add_argument(
+        "project",
+        nargs="?",
+        help="Optional data root. Global registrations use the shared user-level KnowCoder directory.",
+    )
     doctor_parser = subcommands.add_parser("doctor", help="Check the local installation or configured services")
     doctor_parser.add_argument(
         "--local",
@@ -114,7 +125,11 @@ def main() -> None:
         raise SystemExit(doctor(local_only=args.local))
     settings = load_settings()
     apply_settings(settings)
-    project = Path(args.project).expanduser().resolve()
+    project_argument = getattr(args, "project", None)
+    project = Path(project_argument).expanduser() if project_argument else default_project_root()
+    if project_argument is None:
+        project.mkdir(parents=True, exist_ok=True)
+    project = project.resolve()
     if not project.is_dir():
         raise SystemExit(f"Selected project is not a directory: {project}")
     os.environ["SCHEMA_WORKSPACE_PROJECT"] = str(project)

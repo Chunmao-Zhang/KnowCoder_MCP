@@ -8,6 +8,8 @@ KnowCoder MCP is a local MCP Server that turns a deep-research question into a r
 
 The repository contains the MCP Server, background task runtime, research Subagents, validators, storage layer, and read-only Problem and Schema Review pages. It does not contain the KnowCoder chat frontend or Solver.
 
+A global registration stores Workspaces in one user-level KnowCoder data directory. Codex, Claude Code, and Claude Desktop/Work on the same computer can therefore find and extend the same Workspace by ID without a project-path setting.
+
 ## What happens during a task
 
 1. The host Agent starts a Workspace task.
@@ -138,7 +140,12 @@ Windows PowerShell:
 (Get-Command knowcoder-mcp).Source
 ```
 
-Replace `/ABSOLUTE/PATH/TO/knowcoder-mcp` below with the real absolute executable path. Register the Server once at user scope. KnowCoder uses the project currently opened by the Agent and creates `.knowcoder_workspace/` there, so changing projects does not require another installation.
+Replace `/ABSOLUTE/PATH/TO/knowcoder-mcp` below with the real absolute executable path. Register the Server once at user scope. No Workspace path is required. The default runtime location is:
+
+- macOS: `~/.local/share/knowcoder-mcp/.knowcoder_workspace/`
+- Windows: `%LOCALAPPDATA%\knowcoder-mcp\.knowcoder_workspace\`
+
+All supported hosts on the same user account share this location. Runtime files remain local and are not written into the cloned repository.
 
 #### Codex
 
@@ -252,7 +259,7 @@ During long-running stages, brief progress is reported when the active Subagent 
 
 ## Workspace layout
 
-Runtime data stays inside `.knowcoder_workspace/` in the project currently opened by the Agent. A published Workspace contains:
+Runtime data stays inside the shared user-level `.knowcoder_workspace/` described in the installation section. A published Workspace contains:
 
 ```text
 workspace/

@@ -8,8 +8,16 @@ from pathlib import Path
 
 from knowcoder_workspace_builder.contracts.errors import UnsafeProjectError
 
-
 PROJECT_ENVIRONMENTS = ("SCHEMA_WORKSPACE_PROJECT", "KNOWCODER_TARGET_PROJECT_ROOT")
+
+
+def default_project_root() -> Path:
+    """Return the shared user-level root used by a global MCP registration."""
+    if os.name == "nt":
+        data_home = Path(os.environ.get("LOCALAPPDATA") or Path.home() / "AppData" / "Local")
+    else:
+        data_home = Path(os.environ.get("XDG_DATA_HOME") or Path.home() / ".local" / "share")
+    return data_home.expanduser() / "knowcoder-mcp"
 
 
 def _unsafe_reason(path: Path) -> str | None:
@@ -29,7 +37,7 @@ class SelectedProject:
     source: str
 
     @classmethod
-    def resolve(cls, value: str | Path | None = None) -> "SelectedProject":
+    def resolve(cls, value: str | Path | None = None) -> SelectedProject:
         source = "argument"
         raw: str | Path | None = value
         if raw is None:
