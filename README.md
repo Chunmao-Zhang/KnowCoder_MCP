@@ -1,8 +1,7 @@
-<p align="center">
-  <img src="assets/knowcoder-agent.png" alt="KnowCoder Agent — Question to Schema to Answer" width="432">
-</p>
-
-<h1 align="center">KnowCoder MCP</h1>
+<h1 align="center">
+  <img src="assets/knowcoder-logo.svg" alt="KnowCoder" width="52" align="absmiddle">
+  KnowCoder MCP
+</h1>
 
 KnowCoder MCP is a local MCP Server that turns a deep-research question into a reusable, source-grounded Workspace. It keeps the research plan, source material, Schema, entities, relations, provenance, and final report together. A completed Workspace can be extended later without repeating accepted work.
 
