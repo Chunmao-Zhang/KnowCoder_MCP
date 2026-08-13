@@ -138,7 +138,7 @@ Windows PowerShell:
 (Get-Command knowcoder-mcp).Source
 ```
 
-Replace `/ABSOLUTE/PATH/TO/knowcoder-mcp` and `/ABSOLUTE/PATH/TO/YOUR/PROJECT` below with real absolute paths. The selected project is where `.knowcoder_workspace/` will be created.
+Replace `/ABSOLUTE/PATH/TO/knowcoder-mcp` below with the real absolute executable path. Register the Server once at user scope. KnowCoder uses the project currently opened by the Agent and creates `.knowcoder_workspace/` there, so changing projects does not require another installation.
 
 #### Codex
 
@@ -147,7 +147,7 @@ Add this user-level entry to `~/.codex/config.toml`:
 ```toml
 [mcp_servers.knowcoder_workspace_builder]
 command = "/ABSOLUTE/PATH/TO/knowcoder-mcp"
-args = ["serve", "/ABSOLUTE/PATH/TO/YOUR/PROJECT"]
+args = ["serve"]
 startup_timeout_sec = 30
 tool_timeout_sec = 60
 ```
@@ -155,7 +155,7 @@ tool_timeout_sec = 60
 #### Claude Code
 
 ```bash
-claude mcp add --scope user knowcoder_workspace_builder -- /ABSOLUTE/PATH/TO/knowcoder-mcp serve /ABSOLUTE/PATH/TO/YOUR/PROJECT
+claude mcp add --scope user knowcoder_workspace_builder -- /ABSOLUTE/PATH/TO/knowcoder-mcp serve
 ```
 
 #### Claude Desktop or Claude Work
@@ -164,7 +164,7 @@ Open **Settings → Connectors → Add custom connector** and enter:
 
 - Name: `knowcoder_workspace_builder`
 - Command: the absolute `knowcoder-mcp` executable path
-- Arguments: `serve` followed by the absolute selected-project path
+- Arguments: `serve`
 
 For hosts that accept a JSON MCP configuration, use:
 
@@ -173,7 +173,7 @@ For hosts that accept a JSON MCP configuration, use:
   "mcpServers": {
     "knowcoder_workspace_builder": {
       "command": "/ABSOLUTE/PATH/TO/knowcoder-mcp",
-      "args": ["serve", "/ABSOLUTE/PATH/TO/YOUR/PROJECT"]
+      "args": ["serve"]
     }
   }
 }
@@ -206,13 +206,12 @@ Configuration I can provide now:
 - Extraction model Base URL: <OPTIONAL_BASE_URL>
 - Extraction model name: <OPTIONAL_MODEL_NAME>
 - Serper API key: <OPTIONAL_SERPER_API_KEY>
-- Project directory for generated Workspaces: <ABSOLUTE_PROJECT_PATH>
 
 Role
 Install and register the released KnowCoder MCP without changing unrelated host settings.
 
 Workflow
-1. Detect macOS or Windows and confirm the selected project directory exists.
+1. Detect macOS or Windows.
 2. Install Git or uv only when missing. Use each project's official installation method.
 3. Clone the repository to a normal user-owned tools directory. If it already exists, update it without deleting user files.
 4. Run the repository installation script for this operating system.
@@ -220,14 +219,14 @@ Workflow
 6. Write every provided API value to the user config.py. Keep secrets out of the repository, terminal output, chat output, and host MCP configuration.
 7. When any API value is empty, complete the installation anyway. At the end, state exactly which values are missing and offer me two choices: give the values to you now, or edit the reported user config.py path myself.
 8. Find the absolute knowcoder-mcp executable path.
-9. Register one user-level stdio MCP Server named knowcoder_workspace_builder in the current host. Use the absolute executable path and these arguments: serve, then the absolute selected-project path. Preserve every unrelated host setting.
+9. Register one user-level stdio MCP Server named knowcoder_workspace_builder in the current host. Use the absolute executable path and the single argument `serve`. Preserve every unrelated host setting. Do not bind the registration to one project directory.
 10. Run `knowcoder-mcp --version` and `knowcoder-mcp doctor --local`. This local test must not call any model or search API.
 11. Restart or reload the MCP connection when the host supports it. Inspect the host's MCP tool list and verify that the Server exposes exactly six tools: start_workspace_task, wait_for_task_update, submit_review_decision, read_workspace, find_workspace_tasks, and stop_task.
 12. If all API values are present, run `knowcoder-mcp doctor` once to test the configured model and Serper services. If values are missing, skip this network test and report that research cannot start until config.py is completed.
 
 Completion report
 - Report whether package installation, local diagnosis, host registration, and six-tool discovery passed separately.
-- Report the repository path, executable path, user config.py path, selected project path, and host configuration file changed.
+- Report the repository path, executable path, user config.py path, and host configuration file changed.
 - Report missing configuration fields plainly.
 - Report every failure with the failed step and original error. Do not silently substitute another model, service, path, or configuration scope.
 ```
@@ -253,7 +252,7 @@ During long-running stages, brief progress is reported when the active Subagent 
 
 ## Workspace layout
 
-Runtime data stays inside the selected project's `.knowcoder_workspace/`. A published Workspace contains:
+Runtime data stays inside `.knowcoder_workspace/` in the project currently opened by the Agent. A published Workspace contains:
 
 ```text
 workspace/
@@ -287,7 +286,7 @@ Open the user `config.py` path shown by `knowcoder-mcp doctor --local`. Fill eve
 
 ### The Server is installed but absent from the host
 
-Confirm that registration is user-level, the executable and project paths are absolute, and the selected project exists. Restart the host after editing its MCP configuration.
+Confirm that registration is user-level and the executable path is absolute. Restart the host after editing its MCP configuration.
 
 ### A task is waiting
 
