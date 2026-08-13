@@ -1,0 +1,389 @@
+{
+  "providers": {
+    "deepseek": {
+      "base_url": "https://api.deepseek.com/v1",
+      "api_key": "${DEEPSEEK_API_KEY}",
+      "models": {
+        "deepseek-v4-flash": {
+          "context_window": 131072,
+          "max_tokens": 16384
+        },
+        "deepseek-chat": {
+          "context_window": 131072,
+          "max_tokens": 16384
+        },
+        "deepseek-v4-pro": {
+          "context_window": 131072,
+          "max_tokens": 16384
+        }
+      }
+    }
+  },
+  "services": {
+    "serper": {
+      "api_key": "${SERPER_API_KEY}",
+      "default_num_results": 10,
+      "max_results_per_call": 10
+    },
+    "web_fetch": {
+      "timeout_seconds": 20,
+      "max_response_bytes": 8000000,
+      "min_content_chars": 160,
+      "chunk_target_chars": 4000,
+      "chunk_overlap_chars": 240,
+      "relevant_chunks_per_source": 4,
+      "relevant_excerpt_chars": 1600,
+      "successful_pages_per_search": 2,
+      "max_concurrency": 4
+    }
+  },
+  "defaults": {
+    "model": "deepseek/deepseek-v4-flash",
+    "temperature": 0,
+    "tools": {
+      "allow": [
+        "*"
+      ],
+      "deny": []
+    },
+    "context": {
+      "keep_turns": 4,
+      "max_input_tokens": 1048576,
+      "summary_trigger_fraction": 0.8,
+      "offload_threshold": 838861
+    },
+    "profile": {
+      "general_purpose_subagent": {
+        "enabled": false
+      },
+      "excluded_middleware": [
+        "SummarizationMiddleware"
+      ]
+    },
+    "max_steps": 200
+  },
+  "agents": [
+    {
+      "id": "workspace_builder",
+      "name": "Workspace Builder",
+      "default": true,
+      "workspace": ".",
+      "subagents": [
+        "problem_clarifier",
+        "evidence_collector",
+        "schema_builder",
+        "schema_judger",
+        "data_extractor",
+        "structured_data_extractor",
+        "workspace_documenter"
+      ],
+      "tools": {
+        "allow": [
+          "task"
+        ],
+        "deny": [
+          "execute_code",
+          "read_file",
+          "write_file",
+          "edit_file",
+          "execute",
+          "ls",
+          "glob",
+          "grep",
+          "write_todos",
+          "workspace_readme_browser",
+          "source_reader",
+          "schema_validator",
+          "web_search",
+          "fetch_web_pages",
+          "save_problem_review",
+          "save_evidence_manifest",
+          "save_schema",
+          "save_schema_judgement",
+          "save_workspace_readme",
+          "get_schema_outline",
+          "append_instances_batch",
+          "append_instances_batches_from_file"
+        ]
+      },
+      "description": "Builds KnowCoder Workspaces by delegating to specialist Subagents.",
+      "middleware": [
+        {
+          "type": "knowcoder_workspace_builder.utils.agent_utils.message_validator.delegation.DelegationDisciplineMiddleware"
+        },
+        {
+          "type": "knowcoder_workspace_builder.utils.agent_utils.message_validator.delegation.WorkspaceExtractionDelegationMiddleware"
+        }
+      ]
+    },
+    {
+      "id": "problem_clarifier",
+      "name": "Problem Clarifier",
+      "workspace": "subagents/problem_clarifier",
+      "model": {
+        "max_tokens": 4096,
+        "extra_body": {
+          "thinking": {
+            "type": "disabled"
+          }
+        }
+      },
+      "tools": {
+        "allow": [
+          "workspace_readme_browser",
+          "source_reader",
+          "save_problem_review"
+        ],
+        "deny": [
+          "execute",
+          "execute_code",
+          "read_file",
+          "write_file",
+          "edit_file",
+          "glob",
+          "grep"
+        ]
+      },
+      "description": "Clarifies the user's question and writes the Problem artifact.",
+      "middleware": [
+        {
+          "type": "knowcoder_workspace_builder.runtime.agent_tool_call_middleware.RunAttemptGuardMiddleware"
+        },
+        {
+          "type": "knowcoder_workspace_builder.runtime.agent_tool_call_middleware.PersistenceDoneStopMiddleware"
+        },
+        {
+          "type": "knowcoder_workspace_builder.runtime.agent_tool_call_middleware.StageCompletionContractMiddleware"
+        }
+      ]
+    },
+    {
+      "id": "evidence_collector",
+      "name": "Evidence Collector",
+      "workspace": "subagents/evidence_collector",
+      "tools": {
+        "allow": [
+          "workspace_readme_browser",
+          "source_reader",
+          "web_search",
+          "web_search_batch",
+          "fetch_web_pages",
+          "save_evidence_manifest"
+        ],
+        "deny": [
+          "execute",
+          "execute_code",
+          "read_file",
+          "write_file",
+          "edit_file",
+          "glob",
+          "grep"
+        ]
+      },
+      "description": "Reads uploads and controlled web evidence, then persists the evidence manifest with save_evidence_manifest.",
+      "middleware": [
+        {
+          "type": "knowcoder_workspace_builder.runtime.agent_tool_call_middleware.RunAttemptGuardMiddleware"
+        },
+        {
+          "type": "knowcoder_workspace_builder.runtime.agent_tool_call_middleware.PersistenceDoneStopMiddleware"
+        },
+        {
+          "type": "knowcoder_workspace_builder.runtime.agent_tool_call_middleware.StageCompletionContractMiddleware"
+        },
+        {
+          "type": "knowcoder_workspace_builder.runtime.agent_tool_call_middleware.FailedToolCircuitBreakerMiddleware",
+          "args": {
+            "tool_names": [
+              "web_search",
+              "web_search_batch"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "id": "schema_builder",
+      "name": "Schema Builder",
+      "workspace": "subagents/schema_builder",
+      "tools": {
+        "allow": [
+          "workspace_readme_browser",
+          "source_reader",
+          "save_schema"
+        ],
+        "deny": [
+          "execute",
+          "execute_code",
+          "read_file",
+          "write_file",
+          "edit_file",
+          "glob",
+          "grep"
+        ]
+      },
+      "description": "Builds and validates the schema, then persists it with save_schema.",
+      "middleware": [
+        {
+          "type": "knowcoder_workspace_builder.runtime.agent_tool_call_middleware.RunAttemptGuardMiddleware"
+        },
+        {
+          "type": "knowcoder_workspace_builder.runtime.agent_tool_call_middleware.PersistenceDoneStopMiddleware"
+        },
+        {
+          "type": "knowcoder_workspace_builder.runtime.agent_tool_call_middleware.StageCompletionContractMiddleware"
+        }
+      ]
+    },
+    {
+      "id": "schema_judger",
+      "name": "Schema Judger",
+      "workspace": "subagents/schema_judger",
+      "tools": {
+        "allow": [
+          "workspace_readme_browser",
+          "schema_validator",
+          "save_schema_judgement"
+        ],
+        "deny": [
+          "execute",
+          "execute_code",
+          "read_file",
+          "write_file",
+          "edit_file",
+          "glob",
+          "grep"
+        ]
+      },
+      "description": "Judges whether a schema can answer the question and writes the judgement artifact.",
+      "middleware": [
+        {
+          "type": "knowcoder_workspace_builder.runtime.agent_tool_call_middleware.RunAttemptGuardMiddleware"
+        },
+        {
+          "type": "knowcoder_workspace_builder.runtime.agent_tool_call_middleware.PersistenceDoneStopMiddleware"
+        },
+        {
+          "type": "knowcoder_workspace_builder.runtime.agent_tool_call_middleware.StageCompletionContractMiddleware"
+        }
+      ]
+    },
+    {
+      "id": "data_extractor",
+      "name": "Data Extractor",
+      "workspace": "subagents/data_extractor",
+      "tools": {
+        "allow": [
+          "extract_unstructured_chunks"
+        ],
+        "deny": [
+          "execute",
+          "execute_code",
+          "read_file",
+          "write_file",
+          "edit_file",
+          "glob",
+          "grep",
+          "web_search"
+        ]
+      },
+      "description": "Extracts unstructured and web instances in one consolidated validated batch.",
+      "middleware": [
+        {
+          "type": "knowcoder_workspace_builder.runtime.agent_tool_call_middleware.RunAttemptGuardMiddleware"
+        },
+        {
+          "type": "knowcoder_workspace_builder.runtime.agent_tool_call_middleware.StageCompletionContractMiddleware"
+        }
+      ]
+    },
+    {
+      "id": "structured_data_extractor",
+      "name": "Structured Data Extractor",
+      "workspace": "subagents/structured_data_extractor",
+      "tools": {
+        "allow": [
+          "workspace_readme_browser",
+          "source_reader",
+          "get_schema_outline",
+          "append_instances_batches_from_file",
+          "write_file",
+          "execute_code"
+        ],
+        "deny": [
+          "execute",
+          "glob",
+          "grep",
+          "web_search"
+        ]
+      },
+      "middleware": [
+        {
+          "type": "knowcoder_workspace_builder.runtime.agent_tool_call_middleware.RunAttemptGuardMiddleware"
+        },
+        {
+          "type": "knowcoder_workspace_builder.runtime.agent_tool_call_middleware.PersistenceDoneStopMiddleware"
+        },
+        {
+          "type": "knowcoder_workspace_builder.runtime.agent_tool_call_middleware.StageCompletionContractMiddleware"
+        },
+        {
+          "type": "knowcoder_workspace_builder.runtime.agent_tool_call_middleware.StructuredExtractProgressMiddleware"
+        },
+        {
+          "type": "knowcoder_workspace_builder.runtime.agent_tool_call_middleware.RunScopedFileToolMiddleware",
+          "args": {
+            "allowed_subdirs": [
+              "intermediate"
+            ],
+            "execute_subdirs": [
+              "intermediate"
+            ]
+          }
+        }
+      ],
+      "description": "Extracts instances from structured uploads, may run Python helper code, and finalizes the combined dataset."
+    },
+    {
+      "id": "workspace_documenter",
+      "name": "Workspace Documenter",
+      "workspace": "subagents/workspace_documenter",
+      "model": {
+        "extra_body": {
+          "thinking": {
+            "type": "disabled"
+          }
+        }
+      },
+      "tools": {
+        "allow": [
+          "workspace_readme_browser",
+          "save_workspace_readme"
+        ],
+        "deny": [
+          "execute",
+          "execute_code",
+          "read_file",
+          "write_file",
+          "edit_file",
+          "glob",
+          "grep",
+          "web_search"
+        ]
+      },
+      "description": "Authors the semantic content of the completed Workspace README.",
+      "middleware": [
+        {
+          "type": "knowcoder_workspace_builder.runtime.agent_tool_call_middleware.RunAttemptGuardMiddleware"
+        },
+        {
+          "type": "knowcoder_workspace_builder.runtime.agent_tool_call_middleware.PersistenceDoneStopMiddleware"
+        },
+        {
+          "type": "knowcoder_workspace_builder.runtime.agent_tool_call_middleware.StageCompletionContractMiddleware"
+        }
+      ]
+    }
+  ],
+  "mcp_servers": {}
+}

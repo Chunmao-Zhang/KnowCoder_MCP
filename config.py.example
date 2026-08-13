@@ -1,0 +1,15 @@
+"""Copy this file to the user config path and fill every value."""
+
+RESEARCH_MODEL = {
+    "api_key": "",
+    "base_url": "",
+    "model": "deepseek-v4-flash",
+}
+
+EXTRACTION_MODEL = {
+    "api_key": "",
+    "base_url": "",
+    "model": "gpt-4o-mini",
+}
+
+SERPER_API_KEY = ""
