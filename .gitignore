@@ -18,3 +18,8 @@ dist/
 .DS_Store
 *.log
 *.tmp
+
+# Local development and design records are not part of the released MCP.
+test/
+MCP_DESIGN_QA.md
+KNOWCODER_MCP_TODO.md

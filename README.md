@@ -289,13 +289,4 @@ Confirm that registration is user-level, the executable and project paths are ab
 
 Open the returned review page. Confirm or revise the checkpoint in the original Agent conversation. Waiting for review is expected and consumes no API requests.
 
-## Development
-
-```bash
-python -m pip install -e '.[dev]'
-python -m ruff check knowcoder_workspace_builder test
-python -m pytest test/builder
-python -m build
-```
-
-Generated Workspaces, local environments, caches, build output, and user configuration are excluded from publication.
+Generated Workspaces, local environments, caches, build output, user configuration, tests, and internal design records are excluded from publication.
