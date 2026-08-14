@@ -8,7 +8,6 @@ import os
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from secrets import token_urlsafe
 from typing import Any
 from uuid import uuid4
 
@@ -131,7 +130,9 @@ class TaskStore:
                     status=conflict.status,
                 )
             task_id = str(uuid4())
-            token = token_urlsafe(32)
+            # Keep the opaque handle in canonical UUID form. Host models copy
+            # this representation more reliably between separate MCP calls.
+            token = str(uuid4())
             record = TaskRecord(task_id, workspace_id, "running", stage, int(version), _now_iso())
             task_root = self._task_root(task_id)
             _atomic_json(task_root / "state.json", record.to_dict())
