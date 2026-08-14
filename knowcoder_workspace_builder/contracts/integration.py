@@ -8,7 +8,6 @@ from knowcoder_workspace_builder.contracts.workspace import PUBLIC_WORKSPACE_FIL
 from knowcoder_workspace_builder.storage.paths import SessionPaths
 from knowcoder_workspace_builder.storage.transaction import read_json
 
-
 SERVER_INSTRUCTIONS = """# KnowCoder Workspace Builder
 
 ## Purpose
@@ -32,7 +31,7 @@ KnowCoder preserves the research plan, Schema, complete sources, extracted entit
 
 1. Call `start_workspace_task` with the complete user request. Include `workspace_id` only for an incremental update.
 2. Keep the returned `continuation_token` unchanged.
-3. While status is `running`, call one `wait_for_task_update`. Start the next wait only after the previous call returns.
+3. While status is `running`, call one `wait_for_task_update` with `timeout_seconds` set to 40 or less. Start the next wait only after the previous call returns.
 4. Keep ordinary waits silent. A no-change timeout and continued work in the same stage require no user-facing message.
 5. When a different stage or Subagent starts and a wait returns `event=stage_started`, pause before the next tool call. Give the user one short sentence naming the newly started stage or Subagent. Then continue waiting. Treat this progress sentence as part of the same turn; it does not end the task.
 6. Report a Review, completion, or error when returned.

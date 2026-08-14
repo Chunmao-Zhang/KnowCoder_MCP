@@ -13,6 +13,11 @@ from knowcoder_workspace_builder.storage.stage_writers import EvidenceWriter
 def save_evidence_manifest(
     coverage: list[dict[str, Any]],
     unresolved_gaps: list[str],
+    selected_web_sources: list[dict[str, Any]] | None = None,
 ) -> str:
     """Write evidence coverage using runtime-owned source IDs and provenance."""
-    return EvidenceWriter().save(coverage=coverage, unresolved_gaps=unresolved_gaps)
+    return EvidenceWriter().save(
+        coverage=coverage,
+        selected_web_sources=list(selected_web_sources or []),
+        unresolved_gaps=unresolved_gaps,
+    )

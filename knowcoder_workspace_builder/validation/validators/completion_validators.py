@@ -6,7 +6,11 @@ from typing import Any
 
 from knowcoder_workspace_builder.contracts.errors import ContractError
 from knowcoder_workspace_builder.validation.extraction import validate_extraction_draft
-from knowcoder_workspace_builder.validation.validators.base import BaseValidator, ValidationMode, ValidationOutcome
+from knowcoder_workspace_builder.validation.validators.base import (
+    BaseValidator,
+    ValidationMode,
+    ValidationOutcome,
+)
 
 
 class ProblemCompletionValidator(BaseValidator):
@@ -75,8 +79,6 @@ class EvidenceCompletionValidator(BaseValidator):
                 source_ids.append(str(source["source_id"]))
             if len(source_ids) != len(set(source_ids)):
                 raise ValueError("Evidence source IDs must be unique")
-            if data["coverage"] and not source_ids:
-                raise ValueError("Successful evidence coverage requires at least one source")
             workspace_context = ctx.get("workspace_context")
             required_source_ids = self.text_list(
                 workspace_context.get("required_source_ids") or [],
@@ -141,6 +143,15 @@ class EvidenceCompletionValidator(BaseValidator):
             if steps and covered_step_indexes != set(range(1, len(steps) + 1)):
                 raise ValueError("Evidence coverage does not cover every confirmed step_index")
             limitations = list(data.get("unresolved_gaps") or [])
+            unresolved_step_count = sum(
+                1
+                for item in data["coverage"]
+                if isinstance(item, dict) and item.get("status") in {"limited", "blocked"}
+            )
+            if len(limitations) != unresolved_step_count:
+                raise ValueError(
+                    "Evidence limitations must contain one consolidated item for each limited or blocked step"
+                )
             limitations.extend(item for item in blocking if item not in limitations)
             return self.success(context={"limitations": limitations})
         except ValueError as exc:

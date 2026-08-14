@@ -2,141 +2,85 @@
 
 ## Task Definition
 
-Collect sufficient registered sources for every confirmed step with complete final-answer coverage.
+Collect relevant, sufficiently deep evidence for every confirmed research step.
 
 ## Context
 
 Use `question`, `steps`, `upload_paths`, `research_dir`, and `workspace_context`.
 Use `accepted_data` and `uncovered_step_indexes` from `workspace_context` when present.
-Use `workspace_snapshot` for the current README and accepted stage files.
-Use one first-pass cycle and one focused supplement cycle.
+Use `workspace_snapshot` for accepted Workspace material.
 
 ## Operating Protocol
 
-### Existing Material
+1. Between tool calls, show exactly three one-sentence lines named `Searched`, `Missing`, and `Next`.
+2. Read accepted Workspace material and supplied uploads once. Reuse accepted evidence for unchanged steps.
+3. Call `web_search_batch` once for uncovered steps that require external evidence.
+4. Treat Search results as candidate discovery. Fetch promising URLs returned by Search.
+5. Judge fetched bodies against the complete question, current step, named subject, scope, period, and requested facts.
+6. Select bodies that directly support a requested conclusion or disambiguate a named subject.
+7. Keep place-only, broad-topic, same-name, list, and background matches outside formal evidence.
+8. Use one focused Search or alternate source route for each missing core conclusion.
+   Mark it `limited` when that route fails or the requested detail remains unpublished.
+9. Treat named examples and individual fields as guidance. Representative evidence can cover a step.
+10. Call `save_evidence_manifest` when every step is `covered`, `limited`, or `blocked`.
+11. Copy selected candidate IDs exactly, bind each to every step it supports, and finish after `ok=true`.
 
-- Read `workspace_snapshot` before collecting data.
-- Read the current README and canonical stage files.
-- Use recorded questions, sources, paths, and completed coverage as the baseline.
-- Collect data only for new or affected requirements when a baseline exists.
-- Start complete collection from the supplied context when no baseline exists.
-- Read supplied uploads once.
-- Treat a successfully read registered upload as a first-pass source bundle.
-- Use that bundle for steps whose requested conclusions come from the upload.
-- Use web evidence when an upload-bound step requests an external comparison.
-- Use web evidence when the upload lacks required content.
-- Read `accepted_data` when it is present in `workspace_context`.
-- Reuse accepted coverage and sources for unchanged steps.
-- Reflect the relevant content of every required upload in `coverage`.
-- Treat `uncovered_step_indexes` as the ordered search scope.
-- Use each list value as the one-based `step_index`.
+After each Search or Fetch result, state exactly these three lines:
 
-### Search Cycle
+```yaml
+Searched: searched evidence
+Missing: uncovered evidence
+Next: next evidence to collect
+```
 
-- Give every uncovered step a status after its first-pass search.
-- Count a registered upload as the bundle for an upload-bound step.
-- When the workspace has no accepted evidence, call `web_search_batch` immediately after reading the workspace context.
-- Prepare one broad first-pass search for every uncovered step that requires external evidence.
-- Submit those searches together through `web_search_batch`.
-- Cover the current step's subjects, measures, period, scope, and outputs in one query.
-- Choose terms that favor authoritative results from multiple usable domains.
-- Treat search titles and snippets as URL discovery metadata.
-- Use the complete fetched page sources in `coverage_binding` as evidence.
-- Read every returned `coverage_binding` before supplemental search.
-- Count the first successful result bundle as the step's completed first pass.
-- Count distinct usable domains in that bundle as independent sources.
-- Retry a failed request once with corrected input.
-- Mark the step `limited` or `blocked` when the corrected retry still yields no usable source.
-- Record the failed evidence requirement in `unresolved_gaps`.
-- Save one complete manifest snapshot after the first-pass cycle.
-
-### Focused Supplement
-
-- Complete every first-pass index before supplemental search.
-- Review all first-pass bundles together.
-- Identify unsupported claims that block the final deliverable.
-- Put every high-impact unsupported claim into one focused supplemental cycle.
-- Submit independent supplemental searches together through `web_search_batch` when possible.
-- Use `fetch_web_pages` when the needed public URLs are already known.
-- Combine only tightly related gaps in one query.
-- Cross-check central quantitative claims with an independent second domain when the first-pass bundle is single-source.
-- Save the manifest again after supplemental searches change the registered evidence.
-- Record every remaining scope limit in `unresolved_gaps`.
-- Record corrections and source conflicts that affect the final conclusions in `unresolved_gaps`.
-- Give each unresolved claim one corrected retry within the focused supplemental cycle.
-- After that cycle, classify remaining gaps as `limited` or `blocked` and stop searching.
-- Record inaccessible pages as gaps after the corrected retry.
-- Finish the stage when every step has enough evidence for the final deliverable or an explicit `limited` status.
-
-### Sufficiency Decision
-
-- Mark a step covered when complete authoritative sources directly support each required conclusion.
-- Add an independent authoritative source for central quantitative claims derived from public web evidence.
-- Use the registered upload as the authority for upload-defined figures.
-- Add an external cross-check when the step requests one.
-- Treat details qualified as optional or unavailable as answerable limits after a focused attempt.
-- Prefer a usable covered result with explicit limits over exhaustive collection of minor details.
-- Accept `limited` when the available evidence supports a useful qualified conclusion.
-- Supplement only gaps that would block or materially change the final conclusion.
-- Save the manifest immediately after every step reaches `covered`, `limited`, or `blocked` with its limits recorded.
-
-### Completion
-
-- Treat each successful manifest save as a replaceable snapshot of current evidence.
-- Persist a snapshot before starting optional supplemental searches.
-- Continue only through the single focused supplemental cycle when a material requirement remains unsupported.
-- Save the complete manifest again after supplemental evidence changes the registered sources.
-- Record supported requirements in `coverage`.
-- Record answerable limits in `unresolved_gaps`.
-- Record unsupported details in `unresolved_gaps`.
-- Save the complete manifest with `save_evidence_manifest`.
-- Finish immediately after the final `ok=true` save.
-- Read `validation_feedback` after a failed file validation.
-- When validation reports a missing artifact, use the evidence already registered in this attempt.
-- Save the complete manifest in that repair round.
-- Update the saved manifest in place during repair.
-- Finish with a short acknowledgement after saving the manifest.
+Summarize the overall search rather than individual steps. Keep each value to one short sentence and make the next tool
+call immediately. Convert URL lists, detailed plans, candidate inventories, and internal deliberation into tool calls.
 
 ## File Contract
 
 Write one complete manifest through `save_evidence_manifest`.
 
-The manifest contains:
+The model supplies:
 
-- `coverage`: one object per confirmed step
-- `unresolved_gaps`: string list
+- `coverage`: one object for each confirmed step
+- `selected_web_sources`: adopted fetched candidates grouped by step
+- `unresolved_gaps`: one consolidated limitation for each `limited` or `blocked` step, in step order
 
-Each `coverage` item contains:
+Each `coverage` item contains only:
 
 - `step_index`: one-based confirmed step position
 - `status`: `covered`, `limited`, or `blocked`
 
-The runtime writes the question, full step text, requirements, source IDs, and source records.
-The runtime writes file paths, provenance, and `blocking_gaps`.
-The runtime binds web sources from successful `coverage_binding` records and uploads from `required_source_ids`.
-The runtime reuses accepted evidence for unchanged steps.
+Each `selected_web_sources` item contains only:
 
-The runtime validates only `intermediate/attempts/<attempt_id>/evidence_manifest.json`.
-Call `save_evidence_manifest` again after every repair.
-Finish after the latest `ok=true` save reflects all material evidence collected for every confirmed step.
-Validation uses the saved candidate file as the only source of truth.
-The final chat message is informational only.
+- `step_index`: the confirmed step supported by the pages
+- `candidate_ids`: unique IDs returned by `fetch_web_pages`
+
+The runtime promotes selected candidates into formal sources, binds their complete chunks, and writes provenance.
+One selected page is stored once and can support multiple research steps.
+The runtime keeps unselected Search results and fetched candidates outside the formal evidence manifest.
+The runtime reuses accepted evidence for unchanged steps.
+Validation inspects `intermediate/attempts/<attempt_id>/evidence_manifest.json`.
 
 ## Quality Standard
 
-- Provide usable source content for every covered step.
-- Prefer official and primary sources.
-- Cross-check a central quantitative result through distinct domains in its bundle or supplement.
-- Keep searches focused, but continue until each step can support the final answer.
-- Use `limited` for an open-ended list that remains representative and still supports the final answer.
+- Every formal web source directly supports its bound step and the complete question.
+- A source selected for disambiguation names the subject and supplies facts that distinguish the identity.
+- Every covered step has usable source content.
+- Official and primary sources take priority.
+- Search breadth covers all confirmed steps.
+- Focused follow-up searches deepen material gaps.
+- Unrelated people, organizations, places, and background pages remain outside formal evidence.
+- A `covered` step has no unresolved limitation.
+- Final evidence is sufficient for Schema construction, extraction, and the final answer.
 
 ## Tools
 
-- Use `source_reader` for supplied uploads.
-- Use `web_search_batch` for the first-pass searches across uncovered steps.
-- Use `web_search` with `query`, `step_index`, `purpose`, and `expected_new_information`.
-- Use `fetch_web_pages` to fetch complete content from explicit supplemental URLs.
-- Use `save_evidence_manifest` to write the candidate.
+- `source_reader` reads supplied uploads.
+- `web_search_batch` discovers candidate links across multiple uncovered steps.
+- `web_search` discovers candidate links for one focused gap.
+- `fetch_web_pages` returns Markdown body previews and candidate IDs for explicit URLs.
+- `save_evidence_manifest` adopts selected candidates and saves the complete evidence manifest.
 
 ## Examples
 
@@ -146,6 +90,17 @@ The final chat message is informational only.
     {"step_index": 1, "status": "covered"},
     {"step_index": 2, "status": "limited"}
   ],
-  "unresolved_gaps": ["Step 2: one requested metric remained unavailable after focused search."]
+  "selected_web_sources": [
+    {"step_index": 1, "candidate_ids": ["page_0123456789ab"]}
+  ],
+  "unresolved_gaps": [
+    "Step 2: the requested historical figure was unavailable from accessible primary sources."
+  ]
 }
+```
+
+```text
+Searched: official launch dates and published benchmark results.
+Missing: independent cost evidence and regional availability.
+Next: search primary filings and regional product pages.
 ```

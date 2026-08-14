@@ -36,6 +36,18 @@ EXPECTED_MCP_TOOLS = {
 }
 
 
+async def _check_crawl4ai_browser() -> None:
+    from crawl4ai import AsyncWebCrawler, BrowserConfig, CacheMode, CrawlerRunConfig
+
+    async with AsyncWebCrawler(config=BrowserConfig(headless=True, verbose=False)) as crawler:
+        result = await crawler.arun(
+            url="raw:<html><body><main>KnowCoder browser check</main></body></html>",
+            config=CrawlerRunConfig(cache_mode=CacheMode.BYPASS),
+        )
+    if not result.success or "KnowCoder browser check" not in str(result.markdown):
+        raise RuntimeError(f"Crawl4AI browser check failed: {result.error_message or 'rendered text is missing'}")
+
+
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="knowcoder-mcp")
     parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
@@ -89,6 +101,8 @@ def _check_local_installation() -> None:
     if tools != EXPECTED_MCP_TOOLS:
         raise RuntimeError(f"MCP Server exposed unexpected tools: {sorted(tools)}")
     print(f"PASS MCP initialization: {len(tools)} tools")
+    asyncio.run(_check_crawl4ai_browser())
+    print("PASS Crawl4AI and Chromium")
 
 
 def doctor(*, local_only: bool = False) -> int:

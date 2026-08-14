@@ -23,12 +23,15 @@ from knowcoder_workspace_builder.contracts.errors import BuilderError, ContractE
 from knowcoder_workspace_builder.storage.attempts import AttemptStore
 from knowcoder_workspace_builder.storage.paths import ProjectLayout
 from knowcoder_workspace_builder.storage.stage_artifacts import artifact_path
-from knowcoder_workspace_builder.storage.tool_calls import FetchLedger, SearchLedger, ToolCallLedger
+from knowcoder_workspace_builder.storage.tool_calls import (
+    FetchLedger,
+    SearchLedger,
+    ToolCallLedger,
+)
 
 from .invocation_context import active_invocation_context
 from .session_context import ATTEMPT_ID_ENV, active_session_paths
 from .virtual_paths import resolve_virtual_path
-
 
 VALIDATION_ROUND_ENV = "SCHEMA_VALIDATION_ROUND"
 
@@ -86,6 +89,8 @@ class PersistenceDoneStopMiddleware(AgentMiddleware):
     _STAGE_TOOLS = {
         "problem": "save_problem_review",
         "schema_judge": "save_schema_judgement",
+        "extract": "extract_unstructured_chunks",
+        "structured_extract": "append_instances_batches_from_file",
         "document": "save_workspace_readme",
     }
     _FAILURE_TOOLS = {
@@ -224,7 +229,12 @@ class StageCompletionContractMiddleware(AgentMiddleware):
         if stage == "evidence" and not self._has_successful_search(messages):
             action = (
                 "Call web_search_batch now for the uncovered research steps. "
-                "Then review the registered results and call save_evidence_manifest."
+                "Fetch promising links, select only relevant candidate IDs, and call save_evidence_manifest."
+            )
+        elif stage == "schema_build" and not self._successful(messages, "build_schema_candidates"):
+            action = (
+                "Call build_schema_candidates once now. Review the merged candidate and conflicts, "
+                "then call save_schema with the optimized Schema."
             )
         else:
             action = f"Call {tool_name} now with the complete stage result."
@@ -346,6 +356,7 @@ class RunAttemptGuardMiddleware(AgentMiddleware):
         "fetch_web_pages": "Fetch complete content for explicit evidence URLs.",
         "save_problem_review": "Persist the complete problem decomposition candidate.",
         "save_evidence_manifest": "Persist completed evidence coverage and provenance.",
+        "build_schema_candidates": "Generate and merge Schema candidates from the assigned evidence chunks.",
         "save_schema": "Persist a semantic Schema batch for runtime compilation.",
         "save_schema_judgement": "Persist the complete schema review decision.",
         "save_workspace_readme": "Persist the complete Workspace README candidate.",
@@ -508,7 +519,10 @@ class EvidenceManifestPreflightMiddleware(AgentMiddleware):
                         {
                             "ok": True,
                             "sources": [],
-                            "message": "No uploads were supplied. Use only the registered records under web_search.persisted, then call save_evidence_manifest.",
+                            "message": (
+                                "No uploads were supplied. Discover candidates with Search, review complete bodies with Fetch, "
+                                "then select relevant candidate IDs in save_evidence_manifest."
+                            ),
                         },
                         ensure_ascii=False,
                     ),
@@ -523,6 +537,8 @@ class EvidenceManifestPreflightMiddleware(AgentMiddleware):
         for field in ("coverage", "unresolved_gaps"):
             if not isinstance(args.get(field), list):
                 return _tool_error(request, "invalid_evidence_manifest", f"{field} must be a list")
+        if "selected_web_sources" in args and not isinstance(args.get("selected_web_sources"), list):
+            return _tool_error(request, "invalid_evidence_manifest", "selected_web_sources must be a list")
         return None
 
     def wrap_tool_call(
@@ -665,10 +681,9 @@ class FailedToolCircuitBreakerMiddleware(AgentMiddleware):
         if indexes and all(completed_by_step[index] >= 1 for index in indexes):
             instruction = SystemMessage(
                 content=(
-                    "Every uncovered step has a successful first-pass source bundle. "
-                    "Review all bundles together. Run focused supplemental searches for each high-impact unsupported claim. "
-                    "Cross-check central quantitative claims with an independent domain when needed. "
-                    "Save the manifest after those supplements. Record remaining limits in unresolved_gaps."
+                    "Every uncovered step has first-pass Search candidates. "
+                    "Fetch promising links and keep only pages whose body directly supports the step. "
+                    "Run focused Search and Fetch calls for material gaps, then save selected candidate IDs."
                 )
             )
             return request.override(messages=[*messages, instruction])
@@ -677,9 +692,8 @@ class FailedToolCircuitBreakerMiddleware(AgentMiddleware):
         if closed:
             instruction = SystemMessage(
                 content=(
-                    f"First-pass collection is complete for step indexes {closed}. "
-                    f"Collect one first-pass source bundle for step indexes {remaining_focus}. "
-                    "Save the manifest after every uncovered step has one successful bundle."
+                    f"First-pass Search is complete for step indexes {closed}. "
+                    f"Search step indexes {remaining_focus}, then Fetch promising links for every step."
                 )
             )
             return request.override(messages=[*messages, instruction])

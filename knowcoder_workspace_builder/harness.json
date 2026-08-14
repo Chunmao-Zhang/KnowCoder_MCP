@@ -1,7 +1,7 @@
 {
   "providers": {
     "deepseek": {
-      "base_url": "https://api.deepseek.com/v1",
+      "base_url": "https://opencode.ai/zen/go/v1",
       "api_key": "${DEEPSEEK_API_KEY}",
       "models": {
         "deepseek-v4-flash": {
@@ -29,11 +29,12 @@
       "timeout_seconds": 20,
       "max_response_bytes": 8000000,
       "min_content_chars": 160,
-      "chunk_target_chars": 4000,
-      "chunk_overlap_chars": 240,
+      "schema_chunk_target_tokens": 4096,
+      "schema_chunk_overlap_tokens": 256,
+      "extraction_chunk_target_tokens": 2048,
+      "extraction_chunk_overlap_tokens": 128,
       "relevant_chunks_per_source": 4,
       "relevant_excerpt_chars": 1600,
-      "successful_pages_per_search": 2,
       "max_concurrency": 4
     }
   },
@@ -210,6 +211,7 @@
         "allow": [
           "workspace_readme_browser",
           "source_reader",
+          "build_schema_candidates",
           "save_schema"
         ],
         "deny": [
@@ -291,6 +293,9 @@
       "middleware": [
         {
           "type": "knowcoder_workspace_builder.runtime.agent_tool_call_middleware.RunAttemptGuardMiddleware"
+        },
+        {
+          "type": "knowcoder_workspace_builder.runtime.agent_tool_call_middleware.PersistenceDoneStopMiddleware"
         },
         {
           "type": "knowcoder_workspace_builder.runtime.agent_tool_call_middleware.StageCompletionContractMiddleware"

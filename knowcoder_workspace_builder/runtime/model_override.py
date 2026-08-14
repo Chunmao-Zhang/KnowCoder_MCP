@@ -5,7 +5,6 @@ from __future__ import annotations
 import os
 from typing import Any
 
-
 FRIDAY_DEFAULT_BASE_URL = "https://aigc.sankuai.com/v1/openai/native"
 FRIDAY_MODELS = {
     "deepseek-v4-pro-baidu": {
@@ -17,7 +16,7 @@ FRIDAY_MODELS = {
         "max_tokens": 16_384,
     },
 }
-DEEPSEEK_DEFAULT_BASE_URL = "https://api.deepseek.com/v1"
+DEEPSEEK_DEFAULT_BASE_URL = "https://opencode.ai/zen/go/v1"
 DEEPSEEK_MODELS = {
     "deepseek-v4-pro": {
         "context_window": 131_072,

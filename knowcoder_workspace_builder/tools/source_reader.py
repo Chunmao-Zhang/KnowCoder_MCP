@@ -9,8 +9,12 @@ from typing import Any
 
 from langchain_core.tools import tool
 
-from knowcoder_workspace_builder.runtime.invocation_context import active_invocation_context
+from knowcoder_workspace_builder.runtime.invocation_context import (
+    active_invocation_context,
+)
+from knowcoder_workspace_builder.runtime.parallel_units import CONSECUTIVE_FAILURE_LIMIT
 from knowcoder_workspace_builder.runtime.session_context import active_session_paths
+from knowcoder_workspace_builder.runtime.token_chunks import token_chunks
 from knowcoder_workspace_builder.runtime.virtual_paths import virtual_path_for
 from knowcoder_workspace_builder.runtime.workspace_sources import source_records
 from knowcoder_workspace_builder.storage.transaction import AtomicWriter
@@ -19,9 +23,7 @@ from .path_utils import resolve_path
 from .web_content import relevant_chunks, relevant_excerpt
 from .web_fetch import load_source_chunks, load_web_fetch_settings
 
-
 MAX_TEXT_CHARS = 200_000
-TEXT_CHUNK_CHARS = 4_000
 MAX_PREVIEW_ROWS = 50
 MAX_BATCH_SOURCES = 40
 MAX_BATCH_TEXT_CHARS = 96_000
@@ -179,12 +181,20 @@ def _text_record(path: Path, registered: dict[str, Any], text: str | None = None
         raise ValueError(
             f"text source exceeds the {MAX_TEXT_CHARS} character per-source limit; split it into registered sources"
         )
+    settings = load_web_fetch_settings()
     chunks = [
         {
-            "chunk_id": f"{registered['source_id']}#chunk_{index + 1:04d}",
-            "text": content[start : start + TEXT_CHUNK_CHARS],
+            **item,
+            "chunk_id": f"{registered['source_id']}#chunk_{index:04d}",
         }
-        for index, start in enumerate(range(0, len(content), TEXT_CHUNK_CHARS))
+        for index, item in enumerate(
+            token_chunks(
+                content,
+                target_tokens=settings.schema_chunk_target_tokens,
+                overlap_tokens=settings.schema_chunk_overlap_tokens,
+            ),
+            start=1,
+        )
     ]
     return {
         **_base_record(path, registered),
@@ -320,7 +330,9 @@ def _truncate_source_record(record: dict[str, Any], remaining_chars: int) -> dic
 
 def _assigned_source_paths() -> list[str]:
     try:
-        from knowcoder_workspace_builder.runtime.invocation_context import active_invocation_context
+        from knowcoder_workspace_builder.runtime.invocation_context import (
+            active_invocation_context,
+        )
 
         context = active_invocation_context()
     except Exception:
@@ -383,15 +395,15 @@ def _preferred_chunks_by_source() -> dict[str, set[str]]:
     return result
 
 
-def assigned_extraction_chunks() -> list[dict[str, Any]]:
-    """Resolve the current extraction assignment into one model input per chunk."""
+def _assigned_chunks(*, stage: str, units_field: str) -> list[dict[str, Any]]:
+    """Resolve a stage-owned source assignment into one model input per chunk."""
     context = active_invocation_context()
-    if context.stage != "extract":
-        raise ValueError("assigned extraction chunks are available only during the extract stage")
+    if context.stage != stage:
+        raise ValueError(f"assigned chunks are available only during the {stage} stage")
     workspace_context = context.input.get("workspace_context")
-    units = workspace_context.get("extraction_units") if isinstance(workspace_context, dict) else None
+    units = workspace_context.get(units_field) if isinstance(workspace_context, dict) else None
     if not isinstance(units, list) or not units:
-        raise ValueError("extract stage input is missing extraction_units")
+        raise ValueError(f"{stage} stage input is missing {units_field}")
 
     source_by_id = {
         str(item.get("source_id") or "").strip(): item
@@ -399,47 +411,118 @@ def assigned_extraction_chunks() -> list[dict[str, Any]]:
         if isinstance(item, dict) and str(item.get("source_id") or "").strip()
     }
     if not source_by_id:
-        raise ValueError("extract stage input has no assigned sources")
+        raise ValueError(f"{stage} stage input has no assigned sources")
 
     resolved: list[dict[str, Any]] = []
     selected_refs: list[dict[str, str]] = []
+    resolution_errors: list[dict[str, Any]] = []
+    consecutive_failures = 0
+
+    def record_failure(unit_index: int, source_id: str, chunk_id: str, error: Exception) -> None:
+        nonlocal consecutive_failures
+        consecutive_failures += 1
+        resolution_errors.append(
+            {
+                "unit_index": unit_index,
+                "source_id": source_id,
+                "chunk_id": chunk_id,
+                "error_type": type(error).__name__,
+                "error": str(error),
+            }
+        )
+        if consecutive_failures >= CONSECUTIVE_FAILURE_LIMIT:
+            raise ValueError(
+                f"{stage} source resolution failed for {CONSECUTIVE_FAILURE_LIMIT} consecutive inputs"
+            ) from error
+
+    def record_success(item: dict[str, Any]) -> None:
+        nonlocal consecutive_failures
+        resolved.append(item)
+        consecutive_failures = 0
+        chunk_id = str(item.get("chunk_id") or "")
+        if chunk_id:
+            selected_refs.append({"source_id": str(item["source_id"]), "chunk_id": chunk_id})
+
     for fallback_index, raw_unit in enumerate(units, start=1):
         if not isinstance(raw_unit, dict):
-            raise ValueError(f"extraction_units[{fallback_index}] must be an object")
-        unit_index = int(raw_unit.get("unit_index") or fallback_index)
-        step_index = int(raw_unit.get("step_index") or 1)
+            record_failure(
+                fallback_index,
+                "",
+                "",
+                ValueError(f"{units_field}[{fallback_index}] must be an object"),
+            )
+            continue
+        try:
+            unit_index = int(raw_unit.get("unit_index") or fallback_index)
+            step_index = int(raw_unit.get("step_index") or 1)
+        except (TypeError, ValueError) as error:
+            record_failure(fallback_index, "", "", error)
+            continue
         step = str(raw_unit.get("step") or "").strip()
         requirements = [str(item).strip() for item in raw_unit.get("requirements") or [] if str(item).strip()]
         source_ids = [str(item).strip() for item in raw_unit.get("source_ids") or [] if str(item).strip()]
         if len(source_ids) != 1 or source_ids[0] not in source_by_id:
-            raise ValueError(f"extraction unit {unit_index} must reference exactly one assigned source")
+            record_failure(
+                unit_index,
+                source_ids[0] if len(source_ids) == 1 else "",
+                "",
+                ValueError(f"{units_field} unit {unit_index} must reference exactly one assigned source"),
+            )
+            continue
         source_id = source_ids[0]
         source = source_by_id[source_id]
         file_path = str(source.get("file_path") or "").strip()
         if not file_path:
-            raise ValueError(f"assigned source {source_id} is missing file_path")
-        path = resolve_path(file_path)
-        registered = _registered_source(path)
+            record_failure(unit_index, source_id, "", ValueError(f"assigned source {source_id} is missing file_path"))
+            continue
+        try:
+            path = resolve_path(file_path)
+            registered = _registered_source(path)
+        except Exception as error:
+            record_failure(unit_index, source_id, "", error)
+            continue
         refs = [item for item in raw_unit.get("chunk_refs") or [] if isinstance(item, dict)]
 
         if refs:
-            chunks_by_id = {
-                str(item.get("chunk_id") or "").strip(): item
-                for item in load_source_chunks(registered)
-                if str(item.get("chunk_id") or "").strip()
-            }
+            try:
+                chunks_by_id = {
+                    str(item.get("chunk_id") or "").strip(): item
+                    for item in load_source_chunks(registered)
+                    if str(item.get("chunk_id") or "").strip()
+                }
+            except Exception as error:
+                record_failure(unit_index, source_id, "", error)
+                continue
             for ref in refs:
                 ref_source_id = str(ref.get("source_id") or "").strip()
                 chunk_id = str(ref.get("chunk_id") or "").strip()
                 if ref_source_id != source_id or not chunk_id:
-                    raise ValueError(f"extraction unit {unit_index} contains an invalid chunk reference")
+                    record_failure(
+                        unit_index,
+                        source_id,
+                        chunk_id,
+                        ValueError(f"{units_field} unit {unit_index} contains an invalid chunk reference"),
+                    )
+                    continue
                 chunk = chunks_by_id.get(chunk_id)
                 if chunk is None:
-                    raise ValueError(f"assigned chunk does not exist: {source_id}/{chunk_id}")
+                    record_failure(
+                        unit_index,
+                        source_id,
+                        chunk_id,
+                        ValueError(f"assigned chunk does not exist: {source_id}/{chunk_id}"),
+                    )
+                    continue
                 text = str(chunk.get("text") or "").strip()
                 if not text:
-                    raise ValueError(f"assigned chunk is empty: {source_id}/{chunk_id}")
-                resolved.append(
+                    record_failure(
+                        unit_index,
+                        source_id,
+                        chunk_id,
+                        ValueError(f"assigned chunk is empty: {source_id}/{chunk_id}"),
+                    )
+                    continue
+                record_success(
                     {
                         "unit_index": unit_index,
                         "step_index": step_index,
@@ -452,18 +535,27 @@ def assigned_extraction_chunks() -> list[dict[str, Any]]:
                         "text": text,
                     }
                 )
-                selected_refs.append({"source_id": source_id, "chunk_id": chunk_id})
             continue
 
-        record = _read_one(path, query=" ".join([step, *requirements]), preferred_chunk_ids=set())
+        try:
+            record = _read_one(path, query=" ".join([step, *requirements]), preferred_chunk_ids=set())
+        except Exception as error:
+            record_failure(unit_index, source_id, "", error)
+            continue
         chunks = [item for item in record.get("chunks") or [] if isinstance(item, dict)]
         if chunks:
             for chunk_position, chunk in enumerate(chunks, start=1):
                 chunk_id = str(chunk.get("chunk_id") or "").strip()
                 text = str(chunk.get("text") or "").strip()
                 if not chunk_id or not text:
-                    raise ValueError(f"source {source_id} returned an invalid chunk at position {chunk_position}")
-                resolved.append(
+                    record_failure(
+                        unit_index,
+                        source_id,
+                        chunk_id,
+                        ValueError(f"source {source_id} returned an invalid chunk at position {chunk_position}"),
+                    )
+                    continue
+                record_success(
                     {
                         "unit_index": unit_index,
                         "step_index": step_index,
@@ -476,13 +568,18 @@ def assigned_extraction_chunks() -> list[dict[str, Any]]:
                         "text": text,
                     }
                 )
-                selected_refs.append({"source_id": source_id, "chunk_id": chunk_id})
             continue
 
         sample_rows = record.get("sample_rows") or []
         if not isinstance(sample_rows, list) or not sample_rows:
-            raise ValueError(f"assigned source has no readable extraction content: {source_id}")
-        resolved.append(
+            record_failure(
+                unit_index,
+                source_id,
+                "",
+                ValueError(f"assigned source has no readable extraction content: {source_id}"),
+            )
+            continue
+        record_success(
             {
                 "unit_index": unit_index,
                 "step_index": step_index,
@@ -497,13 +594,66 @@ def assigned_extraction_chunks() -> list[dict[str, Any]]:
         )
 
     if not resolved:
-        raise ValueError("extract stage resolved no readable chunks")
+        raise ValueError(f"{stage} stage resolved no readable chunks")
     paths = active_session_paths()
+    AtomicWriter(paths).json(
+        paths.attempts / context.attempt_id / "source_resolution_errors.json",
+        {"format_version": 1, "count": len(resolution_errors), "items": resolution_errors},
+    )
     AtomicWriter(paths).json(
         paths.attempts / context.attempt_id / "selected_chunks.json",
         {"format_version": 1, "evidence_refs": selected_refs},
     )
     return resolved
+
+
+def assigned_extraction_chunks() -> list[dict[str, Any]]:
+    """Resolve extraction assignments and split Schema chunks into smaller model inputs."""
+    parent_chunks = _assigned_chunks(stage="extract", units_field="extraction_units")
+    settings = load_web_fetch_settings()
+    chunks: list[dict[str, Any]] = []
+    evidence_refs: list[dict[str, str]] = []
+    for parent in parent_chunks:
+        parent_chunk_id = str(parent.get("chunk_id") or "")
+        if parent_chunk_id:
+            evidence_refs.append({"source_id": str(parent["source_id"]), "chunk_id": parent_chunk_id})
+        parts = token_chunks(
+            str(parent["text"]),
+            target_tokens=settings.extraction_chunk_target_tokens,
+            overlap_tokens=settings.extraction_chunk_overlap_tokens,
+        )
+        for part_index, part in enumerate(parts, start=1):
+            chunks.append(
+                {
+                    **parent,
+                    "chunk_id": (
+                        f"{parent_chunk_id}#extract_{part_index:04d}"
+                        if parent_chunk_id
+                        else f"{parent['source_id']}#extract_{len(chunks) + 1:04d}"
+                    ),
+                    "evidence_chunk_id": parent_chunk_id,
+                    "text": part["text"],
+                    "token_count": part["token_count"],
+                    "tokenizer_model": part["tokenizer_model"],
+                }
+            )
+    paths = active_session_paths()
+    context = active_invocation_context()
+    AtomicWriter(paths).json(
+        paths.attempts / context.attempt_id / "selected_chunks.json",
+        {"format_version": 1, "evidence_refs": list({(item["source_id"], item["chunk_id"]): item for item in evidence_refs}.values())},
+    )
+    return chunks
+
+
+def assigned_schema_chunks() -> list[dict[str, Any]]:
+    """Resolve the Schema assignment into one model input per evidence chunk."""
+    chunks = _assigned_chunks(stage="schema_build", units_field="schema_units")
+    unique: dict[tuple[str, str], dict[str, Any]] = {}
+    for chunk in chunks:
+        key = (str(chunk.get("source_id") or ""), str(chunk.get("chunk_id") or ""))
+        unique.setdefault(key, chunk)
+    return list(unique.values())
 
 
 def _persist_selected_chunks(sources: list[dict[str, Any]]) -> None:

@@ -6,32 +6,45 @@ import json
 import os
 import sys
 from dataclasses import replace
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 from langchain_core.messages import ToolMessage
 
-from knowcoder_workspace_builder.agents.registry import BUILDER_ROOT, load_harness_registry
+from knowcoder_workspace_builder.agents.registry import (
+    BUILDER_ROOT,
+    load_harness_registry,
+)
 from knowcoder_workspace_builder.contracts.errors import (
+    TRANSIENT_EXTERNAL_ERROR_TYPES,
     ContractError,
     ExternalServiceError,
-    TRANSIENT_EXTERNAL_ERROR_TYPES,
 )
 from knowcoder_workspace_builder.harness.agents.agent_loop import stream_agent
-from knowcoder_workspace_builder.runtime.live_events import WorkerLiveEmitter, emit_worker_event
-from knowcoder_workspace_builder.runtime.candidate_normalization import schema_blueprint_from_source
-from knowcoder_workspace_builder.validation.artifact_validators import validate_current_artifact
 from knowcoder_workspace_builder.runtime.agent_tool_call_middleware import (
     VALIDATION_ROUND_ENV,
 )
-from knowcoder_workspace_builder.validation.file_validation import MAX_VALIDATION_ROUNDS, STAGE_PERSISTENCE_TOOLS
-from knowcoder_workspace_builder.validation.stage_results import STAGE_PROTOCOLS
-from knowcoder_workspace_builder.storage.tool_calls import ToolCallLedger
-from knowcoder_workspace_builder.storage.transaction import read_json
-from knowcoder_workspace_builder.tools.workspace_readme_browser import workspace_readme_browser
-from knowcoder_workspace_builder.runtime.invocation_context import active_invocation_context, bind_delegation_payload
+from knowcoder_workspace_builder.runtime.invocation_context import (
+    active_invocation_context,
+    bind_delegation_payload,
+)
+from knowcoder_workspace_builder.runtime.live_events import (
+    WorkerLiveEmitter,
+    emit_worker_event,
+)
 from knowcoder_workspace_builder.runtime.session_context import active_session_paths
-
+from knowcoder_workspace_builder.storage.tool_calls import ToolCallLedger
+from knowcoder_workspace_builder.tools.workspace_readme_browser import (
+    workspace_readme_browser,
+)
+from knowcoder_workspace_builder.validation.artifact_validators import (
+    validate_current_artifact,
+)
+from knowcoder_workspace_builder.validation.file_validation import (
+    MAX_VALIDATION_ROUNDS,
+    STAGE_PERSISTENCE_TOOLS,
+)
+from knowcoder_workspace_builder.validation.stage_results import STAGE_PROTOCOLS
 
 SCHEMA_OUTPUT_TOKENS_ENV = "SCHEMA_BUILDER_MAX_TOKENS"
 SCHEMA_RETRY_OUTPUT_TOKENS_ENV = "SCHEMA_BUILDER_RETRY_MAX_TOKENS"
@@ -44,8 +57,6 @@ DEFAULT_SCHEMA_OUTPUT_TOKENS = 4_096
 DEFAULT_SCHEMA_RETRY_OUTPUT_TOKENS = 8_192
 DEFAULT_EXTRACT_OUTPUT_TOKENS = 16_384
 DEFAULT_EXTRACT_RETRY_OUTPUT_TOKENS = 16_384
-SCHEMA_STEPS_PER_BATCH_ENV = "SCHEMA_BUILDER_STEPS_PER_BATCH"
-DEFAULT_SCHEMA_STEPS_PER_BATCH = 2
 LENGTH_RETRY_STAGES = frozenset(
     {"problem", "evidence", "schema_build", "schema_judge", "extract", "structured_extract", "document"}
 )
@@ -81,7 +92,7 @@ SPECIALIST_RUNTIME = {
     },
     "schema_build": {
         "name": "Schema Engineer",
-        "tools": ("save_schema",),
+        "tools": ("build_schema_candidates", "save_schema"),
     },
     "schema_judge": {
         "name": "Schema Quality Reviewer",
@@ -173,14 +184,10 @@ def _emit_subagent_lifecycle(
         "subagent_lifecycle": True,
     }
     if status == "running":
-        payload["started_at"] = workflow_started_at or datetime.now(timezone.utc).isoformat()
+        payload["started_at"] = workflow_started_at or datetime.now(UTC).isoformat()
     if workflow_started_at:
         payload["workflow_started_at"] = workflow_started_at
-    if stage == "schema_build" and unit_index > 0:
-        payload["schema_step_index"] = unit_index
-        payload["schema_step_total"] = unit_total
-        payload["detail"] = f"Building Schema batch {unit_index} of {unit_total}."
-    elif isinstance(unit_index, int) and not isinstance(unit_index, bool) and unit_index > 0:
+    if isinstance(unit_index, int) and not isinstance(unit_index, bool) and unit_index > 0:
         payload["extract_unit_index"] = unit_index
     emit_worker_event(payload)
 
@@ -522,130 +529,29 @@ def _validation_repair_message(
     return json.dumps(payload, ensure_ascii=False)
 
 
-def _schema_outline_for_attempt(stage_input: dict[str, Any]) -> dict[str, Any]:
-    context = active_invocation_context()
-    blueprint_path = active_session_paths().attempts / context.attempt_id / "schema_blueprint.json"
-    if blueprint_path.is_file():
-        blueprint = read_json(blueprint_path)
-        if not isinstance(blueprint, dict):
-            raise ValueError("Saved schema blueprint must be an object")
-        return blueprint
-    workspace_context = stage_input.get("workspace_context")
-    current_source = workspace_context.get("current_schema") if isinstance(workspace_context, dict) else None
-    if str(current_source or "").strip():
-        return schema_blueprint_from_source(str(current_source))
-    return {"entities": [], "relations": []}
-
-
-def _compact_schema_outline(blueprint: dict[str, Any]) -> dict[str, Any]:
-    """Project the accumulated Schema into the signatures needed for reuse."""
-    entities: list[dict[str, Any]] = []
-    for item in blueprint.get("entities") or []:
-        if not isinstance(item, dict) or not str(item.get("name") or "").strip():
-            raise ValueError("Saved schema blueprint contains an invalid entity")
-        attributes = item.get("attributes")
-        if not isinstance(attributes, list):
-            raise ValueError("Saved schema blueprint entity attributes must be a list")
-        entities.append(
-            {
-                "name": str(item["name"]),
-                "id_type": str(item.get("id_type") or ""),
-                "attributes": [
-                    {
-                        "name": str(attribute.get("name") or ""),
-                        "type": str(attribute.get("type") or ""),
-                        "optional": bool(attribute.get("optional")),
-                    }
-                    for attribute in attributes
-                    if isinstance(attribute, dict)
-                ],
-            }
-        )
-    relations: list[dict[str, Any]] = []
-    for item in blueprint.get("relations") or []:
-        if not isinstance(item, dict) or not str(item.get("name") or "").strip():
-            raise ValueError("Saved schema blueprint contains an invalid relation")
-        relations.append(
-            {
-                "name": str(item["name"]),
-                "head": str(item.get("head") or ""),
-                "tail": str(item.get("tail") or ""),
-                "many": bool(item.get("many")),
-                "optional": bool(item.get("optional")),
-            }
-        )
-    return {
-        "entity_count": len(entities),
-        "relation_count": len(relations),
-        "entities": entities,
-        "relations": relations,
-    }
-
-
-def _schema_coverage_summary(item: dict[str, Any]) -> dict[str, Any]:
-    return {key: item[key] for key in ("step_index", "step", "requirements", "status") if key in item}
-
-
-def _schema_unit_input(
-    stage_input: dict[str, Any],
-    *,
-    steps: list[object],
-    batch_index: int,
-    batch_total: int,
-    coverage_step_indexes: list[int],
-) -> dict[str, Any]:
-    data_manifest = stage_input.get("data_manifest")
-    data_manifest = data_manifest if isinstance(data_manifest, dict) else {}
-    coverage = data_manifest.get("coverage") if isinstance(data_manifest.get("coverage"), list) else []
-    source_step_indexes = set(coverage_step_indexes)
-    matching_coverage = [
-        _schema_coverage_summary(item)
-        for position, item in enumerate(coverage, start=1)
-        if isinstance(item, dict) and int(item.get("step_index") or position) in source_step_indexes
-    ]
-    source_context = stage_input.get("workspace_context")
-    source_context = source_context if isinstance(source_context, dict) else {}
-    workspace_context = {
-        "current_step_index": batch_index,
-        "current_step_total": batch_total,
-        "source_step_indexes": coverage_step_indexes,
-        "current_schema_outline": _compact_schema_outline(_schema_outline_for_attempt(stage_input)),
-        "schema_build_mode": "incremental_steps",
-        "workspace_mode": str(source_context.get("workspace_mode") or source_context.get("mode") or ""),
-        "revision_requirements": list(source_context.get("revision_requirements") or []),
-        "user_instruction": str(source_context.get("user_instruction") or ""),
-    }
-    return {
-        "question": stage_input["question"],
-        "steps": [str(step) for step in steps],
-        "data_manifest": {"coverage": matching_coverage},
-        "workspace_context": workspace_context,
-    }
-
-
 def _run_schema_specialist(
     *,
     stage_input: dict[str, Any],
     specialist: Any,
     registry: Any,
     config: Any,
-    batch_index: int,
-    batch_total: int,
 ) -> tuple[dict[str, Any], WorkerLiveEmitter]:
     context = active_invocation_context()
-    thread_id = f"{context.session_id}:{context.attempt_id}:schema_build:batch-{batch_index}"
+    thread_id = f"{context.session_id}:{context.attempt_id}:schema_build"
     emitter = WorkerLiveEmitter(
         stage="schema_build",
         run_agent="workspace_builder",
         sink=emit_worker_event,
-        context={"schema_step_index": batch_index, "schema_step_total": batch_total},
     )
     payload = {
         "stage": "schema_build",
         "input": stage_input,
         "execution": {
-            "mode": "incremental_schema_patch",
-            "instruction": "Expand the accumulated Schema for this batch, save one minimal sufficient patch, and finish.",
+            "mode": "parallel_evidence_schema",
+            "instruction": (
+                "Generate candidates from every assigned evidence chunk, resolve the merged semantic conflicts, "
+                "save one optimized Schema patch, and finish."
+            ),
         },
     }
     result = stream_agent(
@@ -663,79 +569,36 @@ def _run_schema_specialist(
     return result, emitter
 
 
-def _run_schema_units(
+def _run_schema_stage(
     *,
     stage_input: dict[str, Any],
     specialist: Any,
     registry: Any,
     config: Any,
 ) -> tuple[dict[str, Any], WorkerLiveEmitter]:
-    steps = list(stage_input.get("steps") or [])
-    if not steps:
-        raise ValueError("Schema construction requires at least one confirmed step")
-    raw_step_indexes = stage_input.get("schema_step_indexes")
-    if raw_step_indexes is None:
-        source_step_indexes = list(range(1, len(steps) + 1))
-    else:
-        if not isinstance(raw_step_indexes, list) or len(raw_step_indexes) != len(steps):
-            raise ValueError("Schema step indexes must align with Schema steps")
-        source_step_indexes = []
-        for value in raw_step_indexes:
-            if not isinstance(value, int) or isinstance(value, bool) or value < 0:
-                raise ValueError("Schema step indexes must be non-negative integers")
-            source_step_indexes.append(value)
-    raw_batch_size = str(os.environ.get(SCHEMA_STEPS_PER_BATCH_ENV) or DEFAULT_SCHEMA_STEPS_PER_BATCH).strip()
-    try:
-        batch_size = int(raw_batch_size)
-    except ValueError as exc:
-        raise ValueError(f"{SCHEMA_STEPS_PER_BATCH_ENV} must be a positive integer") from exc
-    if batch_size <= 0:
-        raise ValueError(f"{SCHEMA_STEPS_PER_BATCH_ENV} must be a positive integer")
-    indexed_steps = list(zip(steps, source_step_indexes, strict=True))
-    batches = [indexed_steps[index : index + batch_size] for index in range(0, len(indexed_steps), batch_size)]
-    workflow_started_at = datetime.now(timezone.utc).isoformat()
-    result: dict[str, Any] = {}
-    emitter: WorkerLiveEmitter | None = None
-    for batch_index, batch in enumerate(batches, start=1):
-        batch_steps = [step for step, _source_index in batch]
-        batch_source_indexes = [source_index for _step, source_index in batch]
-        unit_input = _schema_unit_input(
-            stage_input,
-            steps=batch_steps,
-            batch_index=batch_index,
-            batch_total=len(batches),
-            coverage_step_indexes=batch_source_indexes,
+    workflow_started_at = datetime.now(UTC).isoformat()
+    _emit_subagent_lifecycle("schema_build", "running", workflow_started_at=workflow_started_at)
+    result, emitter = _run_schema_specialist(
+        stage_input=stage_input,
+        specialist=specialist,
+        registry=registry,
+        config=config,
+    )
+    if _successful_tool_payload(result, "build_schema_candidates") is None:
+        _raise_required_tool_failure(
+            result,
+            "build_schema_candidates",
+            "Schema Subagent did not build candidates from the assigned evidence chunks",
+            stage="schema_build",
         )
-        _emit_subagent_lifecycle(
-            "schema_build",
-            "running",
-            unit_index=batch_index,
-            unit_total=len(batches),
-            workflow_started_at=workflow_started_at,
+    if _successful_tool_payload(result, "save_schema") is None:
+        _raise_required_tool_failure(
+            result,
+            "save_schema",
+            "Schema Subagent did not save the optimized Schema",
+            stage="schema_build",
         )
-        result, emitter = _run_schema_specialist(
-            stage_input=unit_input,
-            specialist=specialist,
-            registry=registry,
-            config=config,
-            batch_index=batch_index,
-            batch_total=len(batches),
-        )
-        if _successful_tool_payload(result, "save_schema") is None:
-            _raise_required_tool_failure(
-                result,
-                "save_schema",
-                f"Schema Subagent did not save a valid patch for batch {batch_index}",
-                stage="schema_build",
-            )
-        _emit_subagent_lifecycle(
-            "schema_build",
-            "validating",
-            unit_index=batch_index,
-            unit_total=len(batches),
-            workflow_started_at=workflow_started_at,
-        )
-    assert emitter is not None
+    _emit_subagent_lifecycle("schema_build", "validating", workflow_started_at=workflow_started_at)
     return result, emitter
 
 
@@ -760,7 +623,7 @@ def main() -> None:
         message = json.dumps({"stage": stage, "input": model_input}, ensure_ascii=False)
         os.environ[VALIDATION_ROUND_ENV] = "1"
         if stage == "schema_build":
-            result, live_emitter = _run_schema_units(
+            result, live_emitter = _run_schema_stage(
                 stage_input=request["input"],
                 specialist=specialist,
                 registry=registry,

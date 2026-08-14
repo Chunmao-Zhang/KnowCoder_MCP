@@ -5,7 +5,9 @@ from __future__ import annotations
 from typing import Any
 
 from knowcoder_workspace_builder.contracts.errors import ContractError
-from knowcoder_workspace_builder.runtime.invocation_context import active_invocation_context
+from knowcoder_workspace_builder.runtime.invocation_context import (
+    active_invocation_context,
+)
 from knowcoder_workspace_builder.runtime.session_context import active_session_paths
 from knowcoder_workspace_builder.runtime.workspace_sources import source_records
 from knowcoder_workspace_builder.storage.schema import parse_schema
@@ -169,6 +171,8 @@ def normalize_evidence_candidate(
     coverage: list[dict[str, Any]],
     unresolved_gaps: list[str],
     stage_input: dict[str, Any],
+    selected_web_bindings: dict[int, dict[str, list[Any]]] | None = None,
+    selected_web_records: list[dict[str, Any]] | None = None,
 ) -> tuple[dict[str, Any], list[dict[str, str]]]:
     """Bind step text, requirements, source IDs, and provenance from runtime state."""
     if not isinstance(coverage, list):
@@ -177,7 +181,7 @@ def normalize_evidence_candidate(
     gaps = _text_list(unresolved_gaps, field="unresolved_gaps", deduplicate=True)
     changes: list[dict[str, str]] = [
         _change("question", "derived", "Copied from the validated stage input."),
-        _change("sources", "derived", "Bound from registered search and upload records."),
+        _change("sources", "derived", "Bound from selected fetched pages and registered uploads."),
     ]
     if len(gaps) != len(unresolved_gaps):
         changes.append(_change("unresolved_gaps", "deduplicated", "Removed repeated items."))
@@ -233,40 +237,27 @@ def normalize_evidence_candidate(
     }
     paths = active_session_paths()
     context = active_invocation_context()
-    searches = [
-        item
-        for item in SearchLedger(paths, context.attempt_id).records()
-        if item.get("status") == "completed"
-    ]
-    fetches = [
-        item
-        for item in FetchLedger(paths, context.attempt_id).records()
-        if item.get("status") in {"completed", "partial"}
-    ]
     source_ids_by_step: dict[int, set[str]] = {}
     chunk_refs_by_step: dict[int, set[tuple[str, str]]] = {}
     requirements_by_step: dict[int, list[str]] = {}
+    searches = [item for item in SearchLedger(paths, context.attempt_id).records() if item.get("status") == "completed"]
+    fetches = [item for item in FetchLedger(paths, context.attempt_id).records() if item.get("status") in {"completed", "partial"}]
     for search in [*searches, *fetches]:
         step_index = search.get("step_index")
-        response = search.get("response")
-        binding = response.get("coverage_binding") if isinstance(response, dict) else None
-        ids = binding.get("source_ids") if isinstance(binding, dict) else None
-        if not isinstance(step_index, int) or not isinstance(ids, list):
+        if not isinstance(step_index, int):
             continue
-        source_ids_by_step.setdefault(step_index, set()).update(
-            str(source_id).strip() for source_id in ids if str(source_id).strip()
-        )
-        chunk_refs = binding.get("chunk_refs") if isinstance(binding, dict) else None
-        for ref in chunk_refs if isinstance(chunk_refs, list) else []:
-            if not isinstance(ref, dict):
-                continue
-            source_id = str(ref.get("source_id") or "").strip()
-            chunk_id = str(ref.get("chunk_id") or "").strip()
-            if source_id and chunk_id:
-                chunk_refs_by_step.setdefault(step_index, set()).add((source_id, chunk_id))
         requirement = str(search.get("expected_new_information") or search.get("purpose") or "").strip()
         if requirement and requirement not in requirements_by_step.setdefault(step_index, []):
             requirements_by_step[step_index].append(requirement)
+    for step_index, binding in (selected_web_bindings or {}).items():
+        source_ids_by_step.setdefault(step_index, set()).update(
+            str(source_id) for source_id in binding.get("source_ids", []) if str(source_id).strip()
+        )
+        for ref in binding.get("chunk_refs", []):
+            if isinstance(ref, dict) and str(ref.get("source_id") or "") and str(ref.get("chunk_id") or ""):
+                chunk_refs_by_step.setdefault(step_index, set()).add(
+                    (str(ref["source_id"]), str(ref["chunk_id"]))
+                )
 
     workspace_context = stage_input.get("workspace_context")
     required_source_ids = set(
@@ -282,6 +273,14 @@ def normalize_evidence_candidate(
         for item in source_records(paths.root)
         if str(item.get("source_id") or "").strip()
     }
+    for record in selected_web_records or []:
+        source_id = str(record.get("source_id") or "").strip()
+        if not source_id:
+            raise ContractError("Selected web evidence record requires a source_id")
+        existing = registered.get(source_id)
+        if existing is not None and existing != record:
+            raise ContractError("Selected web evidence conflicts with a registered source", source_id=source_id)
+        registered[source_id] = dict(record)
     missing_required = sorted(required_source_ids - set(registered))
     if missing_required:
         raise ContractError("Required evidence sources are not registered", missing_source_ids=missing_required)
@@ -377,12 +376,19 @@ def normalize_evidence_candidate(
             "Evidence coverage is missing steps without an accepted baseline",
             missing_step_indexes=missing_steps,
         )
+    unresolved_step_count = sum(
+        1 for item in normalized_coverage if item["status"] in {"limited", "blocked"}
+    )
+    if len(gaps) != unresolved_step_count:
+        raise ContractError(
+            "Evidence limitations must contain one consolidated item for each limited or blocked step",
+            expected=unresolved_step_count,
+            actual=len(gaps),
+        )
     missing_registered = sorted(set(referenced_source_ids) - set(registered))
     if missing_registered:
         raise ContractError("Evidence references unregistered runtime sources", source_ids=missing_registered)
     selected_sources = [registered[source_id] for source_id in referenced_source_ids]
-    if normalized_coverage and not selected_sources:
-        raise ContractError("Evidence-dependent work requires at least one registered source")
     changes.append(_change("blocking_gaps", "derived", "Built from coverage items marked blocked."))
     return (
         {

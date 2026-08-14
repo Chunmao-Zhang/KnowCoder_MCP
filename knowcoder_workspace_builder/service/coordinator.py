@@ -13,21 +13,23 @@ from knowcoder_workspace_builder.contracts.errors import (
     StateConflictError,
 )
 from knowcoder_workspace_builder.runtime.retry_policy import wait_before_retry
-from knowcoder_workspace_builder.storage.events import EventStore
-from knowcoder_workspace_builder.storage.canonical import canonical_index
-from knowcoder_workspace_builder.storage.canonical import canonical_artifact_path
-from knowcoder_workspace_builder.storage.extensions import workspace_catalog
-from knowcoder_workspace_builder.storage.paths import ProjectLayout
-from knowcoder_workspace_builder.storage.sessions import BuildStateStore
-from knowcoder_workspace_builder.runtime.virtual_paths import virtual_session_path
 from knowcoder_workspace_builder.runtime.timeouts import DEFAULT_TRANSIENT_RETRY_LIMIT
-from knowcoder_workspace_builder.workflow.models import BuildState
-from knowcoder_workspace_builder.workflow.sources import split_sources
+from knowcoder_workspace_builder.runtime.virtual_paths import virtual_session_path
+from knowcoder_workspace_builder.storage.canonical import (
+    canonical_artifact_path,
+    canonical_index,
+)
+from knowcoder_workspace_builder.storage.events import EventStore
+from knowcoder_workspace_builder.storage.extensions import workspace_catalog
 from knowcoder_workspace_builder.storage.instances import validate_instances
+from knowcoder_workspace_builder.storage.paths import ProjectLayout
 from knowcoder_workspace_builder.storage.schema import parse_schema
+from knowcoder_workspace_builder.storage.sessions import BuildStateStore
 from knowcoder_workspace_builder.storage.sources import SourceRepository
 from knowcoder_workspace_builder.storage.stage_artifacts import merge_final_drafts
 from knowcoder_workspace_builder.storage.transaction import read_json
+from knowcoder_workspace_builder.workflow.models import BuildState
+from knowcoder_workspace_builder.workflow.sources import split_sources
 from knowcoder_workspace_builder.workflow.stages import AGENT_FOR_STAGE, Stage
 
 from .finalize import finalize_workspace
@@ -286,8 +288,95 @@ def _extraction_units_for_sources(
             }
             for source_id in sorted(assigned_ids)
         )
+    merged: dict[tuple[str, str], dict[str, object]] = {}
+    for unit in units:
+        source_id = str((unit.get("source_ids") or [""])[0]).strip()
+        refs = [item for item in unit.get("chunk_refs") or [] if isinstance(item, dict)]
+        chunk_id = str(refs[0].get("chunk_id") or "").strip() if refs else ""
+        key = (source_id, chunk_id)
+        current = merged.setdefault(
+            key,
+            {
+                "source_ids": [source_id],
+                "chunk_refs": ([{"source_id": source_id, "chunk_id": chunk_id}] if chunk_id else []),
+                "step_indexes": [],
+                "steps": [],
+                "requirements": [],
+            },
+        )
+        raw_step_indexes = unit.get("step_indexes") or [unit.get("step_index")]
+        for step_index in raw_step_indexes:
+            if isinstance(step_index, int) and not isinstance(step_index, bool):
+                if step_index not in current["step_indexes"]:
+                    current["step_indexes"].append(step_index)
+        raw_steps = unit.get("steps") or [unit.get("step")]
+        for raw_step in raw_steps:
+            step = str(raw_step or "").strip()
+            if step and step not in current["steps"]:
+                current["steps"].append(step)
+        for requirement in unit.get("requirements") or []:
+            text = str(requirement or "").strip()
+            if text and text not in current["requirements"]:
+                current["requirements"].append(text)
+    units = list(merged.values())
     for unit_index, unit in enumerate(units, start=1):
         unit["unit_index"] = unit_index
+        unit["step_index"] = unit["step_indexes"][0] if unit["step_indexes"] else 1
+        unit["step"] = unit["steps"][0] if unit["steps"] else "All confirmed research steps"
+    return units
+
+
+def _schema_units_for_sources(
+    evidence: dict[str, object],
+    assigned_sources: list[dict[str, object]],
+    step_indexes: list[int] | None = None,
+) -> list[dict[str, object]]:
+    """Build one Schema unit per unique source chunk.
+
+    A source chunk can support several investigation steps.  Schema generation
+    receives the complete question and step list, so repeating that chunk for
+    every coverage entry adds no information.  Keep all matching step metadata
+    on the single unit instead.
+    """
+    step_units = _extraction_units_for_sources(evidence, assigned_sources, step_indexes)
+    merged: dict[tuple[str, str], dict[str, object]] = {}
+    for unit in step_units:
+        source_ids = [str(value).strip() for value in unit.get("source_ids") or [] if str(value).strip()]
+        if len(source_ids) != 1:
+            raise ContractError("Schema unit must reference exactly one source")
+        source_id = source_ids[0]
+        refs = [item for item in unit.get("chunk_refs") or [] if isinstance(item, dict)]
+        chunk_id = str(refs[0].get("chunk_id") or "").strip() if refs else ""
+        key = (source_id, chunk_id)
+        current = merged.setdefault(
+            key,
+            {
+                "source_ids": [source_id],
+                "chunk_refs": ([{"source_id": source_id, "chunk_id": chunk_id}] if chunk_id else []),
+                "step_indexes": [],
+                "steps": [],
+                "requirements": [],
+            },
+        )
+        raw_step_indexes = unit.get("step_indexes") or [unit.get("step_index")]
+        for step_index in raw_step_indexes:
+            if isinstance(step_index, int) and not isinstance(step_index, bool):
+                if step_index not in current["step_indexes"]:
+                    current["step_indexes"].append(step_index)
+        raw_steps = unit.get("steps") or [unit.get("step")]
+        for raw_step in raw_steps:
+            step = str(raw_step or "").strip()
+            if step and step not in current["steps"]:
+                current["steps"].append(step)
+        for requirement in unit.get("requirements") or []:
+            text = str(requirement or "").strip()
+            if text and text not in current["requirements"]:
+                current["requirements"].append(text)
+    units = list(merged.values())
+    for unit_index, unit in enumerate(units, start=1):
+        unit["unit_index"] = unit_index
+        unit["step_index"] = unit["step_indexes"][0] if unit["step_indexes"] else 1
+        unit["step"] = unit["steps"][0] if unit["steps"] else "All confirmed research steps"
     return units
 
 
@@ -372,7 +461,7 @@ class Coordinator:
     def _is_transient_failure(failure: object) -> bool:
         if not isinstance(failure, dict):
             return False
-        if failure.get("code") in {"external_service_error", "invocation_timeout"}:
+        if failure.get("code") == "invocation_timeout":
             return True
         context = failure.get("context")
         error_type = str(context.get("error_type") or "") if isinstance(context, dict) else ""
@@ -527,8 +616,7 @@ class Coordinator:
         schema_manifest = schema_data_manifest(evidence)
         if stage == Stage.SCHEMA_BUILD:
             judgement = (state.schema_review or {}).get("judgement") or {}
-            compact_steps = [_compact_text(step, limit=180) for step in steps if str(step or "").strip()]
-            schema_step_indexes = list(range(1, len(compact_steps) + 1))
+            complete_steps = [str(step).strip() for step in steps if str(step or "").strip()]
             revision_requirements = judgement.get("missing_requirements") or []
             if not isinstance(revision_requirements, list):
                 revision_requirements = []
@@ -540,12 +628,10 @@ class Coordinator:
             # already prioritizes, so rename/remove instructions are not ignored.
             if user_instruction and user_instruction not in compact_requirements:
                 compact_requirements = [user_instruction, *compact_requirements][:20]
-            if compact_requirements:
-                compact_steps = ["Apply all listed revision requirements to the accumulated Schema."]
-                schema_step_indexes = [0]
-            elif state.workspace_mode == "extend" and state.pending_evidence_step_indexes:
-                valid_indexes = set(range(1, len(compact_steps) + 1))
-                schema_step_indexes = list(
+            affected_indexes: list[int] | None = None
+            if state.workspace_mode == "extend" and state.pending_evidence_step_indexes:
+                valid_indexes = set(range(1, len(complete_steps) + 1))
+                affected_indexes = list(
                     dict.fromkeys(
                         index
                         for index in state.pending_evidence_step_indexes
@@ -554,13 +640,12 @@ class Coordinator:
                         and index in valid_indexes
                     )
                 )
-                if not schema_step_indexes:
+                if not affected_indexes:
                     raise ContractError(
                         "Extension evidence step indexes do not match the confirmed research steps",
                         requested_step_indexes=state.pending_evidence_step_indexes,
-                        step_count=len(compact_steps),
+                        step_count=len(complete_steps),
                     )
-                compact_steps = [compact_steps[index - 1] for index in schema_step_indexes]
             elif state.workspace_mode == "extend" and state.base_workspace_id:
                 if state.base_workspace_id == state.session_id:
                     baseline_steps = [
@@ -591,26 +676,27 @@ class Coordinator:
                     if baseline_step != current_step
                 ]
                 affected_indexes.extend(range(len(baseline_steps) + 1, len(current_steps) + 1))
-                if affected_indexes:
-                    compact_steps = [
-                        _compact_text(current_steps[index - 1], limit=180)
-                        for index in affected_indexes
-                    ]
-                    schema_step_indexes = affected_indexes
-                else:
-                    compact_steps = ["Confirm the accumulated Schema covers the unchanged extension request."]
-                    schema_step_indexes = [0]
+            sources = evidence.get("sources")
+            if not isinstance(sources, list):
+                raise MissingStateError("Accepted evidence sources are missing", session_id=state.session_id)
+            assigned_sources = _compact_extraction_sources(sources)
+            if affected_indexes:
+                assigned_sources = _sources_for_step_indexes(evidence, assigned_sources, affected_indexes)
+            schema_units = _schema_units_for_sources(evidence, assigned_sources, affected_indexes)
+            if not schema_units:
+                raise MissingStateError("Accepted evidence contains no readable Schema sources", session_id=state.session_id)
             return {
-                "question": _compact_text(state.question, limit=400),
-                "steps": compact_steps,
-                "schema_step_indexes": schema_step_indexes,
+                "question": state.question,
+                "steps": complete_steps,
                 "data_manifest": schema_manifest,
+                "sources": assigned_sources,
                 "workspace_context": {
                     **self._workspace_context(state),
                     "mode": "revise" if state.schema_review or user_instruction else "new",
                     "current_schema": (state.schema_review or {}).get("schema_source"),
                     "revision_requirements": compact_requirements,
                     "user_instruction": user_instruction,
+                    "schema_units": schema_units,
                 },
             }
 
@@ -639,17 +725,6 @@ class Coordinator:
         sources = evidence.get("sources")
         if not isinstance(sources, list):
             raise MissingStateError("Accepted evidence sources are missing", session_id=state.session_id)
-        stored_sources = {
-            str(item.get("source_id") or ""): item
-            for item in SourceRepository(self.layout.session(state.session_id)).list()
-            if str(item.get("source_id") or "")
-        }
-        sources = [
-            item
-            for item in sources
-            if not isinstance(item, dict)
-            or stored_sources.get(str(item.get("source_id") or ""), {}).get("status") != "superseded"
-        ]
         source_split = split_sources(sources)
         if stage == Stage.EXTRACT:
             assigned = _compact_extraction_sources(source_split["unstructured"])

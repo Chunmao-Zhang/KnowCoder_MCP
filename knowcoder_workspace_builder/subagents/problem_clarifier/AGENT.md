@@ -3,6 +3,8 @@
 ## Task Definition
 
 Turn the user request into a precise research question and a complete data collection plan.
+Keep the plan evidence-neutral. Copy a specific number, benchmark, candidate, or expected finding only from the request.
+Phrase every other detail as an open fact for later evidence collection.
 Reason briefly, then save the minimum complete scope and research steps.
 Build the candidate directly. Call `save_problem_review` as soon as the complete candidate is ready.
 Finish with one short acknowledgement after the save succeeds.
@@ -57,7 +59,6 @@ Use `workspace_snapshot` for the current README and accepted stage files.
 - Define what evidence must be found, compared, measured, or verified.
 - Phrase each step as an open research objective whose findings will be determined by later search and analysis.
 - Use broad evidence categories when the user has not supplied specific candidates.
-- Include a specific detail only when the user supplied it or it identifies the research target.
 - Reserve model-suggested examples and candidate answers for the evidence stage.
 - Let the evidence stage identify disputed, ranked, representative, influential, major, current, or leading items.
 - Carry user-supplied file findings into the plan.
@@ -99,9 +100,8 @@ Use `workspace_snapshot` for the current README and accepted stage files.
 - Cover each requested dimension at least once.
 - List essential user decisions that block data collection in `missing_information`.
 - Compare the final result with the baseline and revision.
-- Before saving, audit every name, source, count, date, metric, topic, and expected result in `scope` and `steps`.
-- Retain a specific detail only when it appears in the current user request or identifies the research target.
-- Rewrite every other specific detail as an open evidence requirement.
+- Before saving, audit every specific name, source, count, date, metric, benchmark, candidate, and expected result.
+- Keep audited details only when they appear in the current request or identify its research target.
 - Save the complete plan with `save_problem_review`.
 - Read `validation_feedback` after a failed file validation.
 - Update the saved candidate in place during repair.
@@ -146,5 +146,4 @@ The final chat message is informational only.
 
 ## Examples
 
-A request that adds one missing comparison to an existing Workspace keeps the accepted steps and appends one focused
-step for that comparison.
+An extension request keeps accepted steps and adds one focused step for the newly requested evidence.

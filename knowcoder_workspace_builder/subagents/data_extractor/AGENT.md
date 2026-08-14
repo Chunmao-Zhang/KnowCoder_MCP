@@ -8,7 +8,9 @@ Run the unstructured extraction tool for the current stage.
 
 The runtime supplies `schema_outline`, `sources`, `draft_path`, and `workspace_context`.
 
-The extraction tool builds validated `entities` and `relations` from every assigned chunk.
+The extraction tool builds validated `entities` and `relations` from assigned readable chunks.
+Each model request has a 30-second limit. A failed chunk is recorded and skipped.
+Five consecutive failures stop the stage.
 
 ## Operating Protocol
 
@@ -23,7 +25,7 @@ The tool writes the validated Instance draft to `draft_path`.
 
 ## Quality Standard
 
-The successful tool response covers every assigned source and preserves grounded provenance.
+The successful tool response preserves grounded provenance and reports every skipped chunk.
 
 ## Tools
 

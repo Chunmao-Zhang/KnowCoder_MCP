@@ -5,17 +5,24 @@ from __future__ import annotations
 import json
 import os
 from collections.abc import Callable
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any
 
+import httpx
 from langchain_core.tools import tool
 from openai import OpenAI
 
-from knowcoder_workspace_builder.contracts.errors import ContractError, ExternalServiceError
-from knowcoder_workspace_builder.runtime.candidate_normalization import normalize_instance_batch
-from knowcoder_workspace_builder.runtime.invocation_context import active_invocation_context
+from knowcoder_workspace_builder.contracts.errors import (
+    ContractError,
+    ExternalServiceError,
+)
+from knowcoder_workspace_builder.runtime.candidate_normalization import (
+    normalize_instance_batch,
+)
+from knowcoder_workspace_builder.runtime.invocation_context import (
+    active_invocation_context,
+)
 from knowcoder_workspace_builder.runtime.live_events import emit_worker_event
-from knowcoder_workspace_builder.runtime.retry_policy import is_external_api_error, wait_before_retry
+from knowcoder_workspace_builder.runtime.parallel_units import run_parallel_units
 from knowcoder_workspace_builder.runtime.session_context import active_session_paths
 from knowcoder_workspace_builder.runtime.virtual_paths import virtual_session_path
 from knowcoder_workspace_builder.storage.stage_artifacts import empty_draft, merge_draft
@@ -24,23 +31,17 @@ from knowcoder_workspace_builder.validation.extraction import validate_extractio
 
 from .source_reader import assigned_extraction_chunks
 
-
 API_KEY_ENV = "UNSTRUCTURED_EXTRACTION_API_KEY"
 BASE_URL_ENV = "UNSTRUCTURED_EXTRACTION_BASE_URL"
 MODEL_ENV = "UNSTRUCTURED_EXTRACTION_MODEL"
 TIMEOUT_ENV = "UNSTRUCTURED_EXTRACTION_TIMEOUT_SECONDS"
 MAX_TOKENS_ENV = "UNSTRUCTURED_EXTRACTION_MAX_TOKENS"
 WORKERS_ENV = "SCHEMA_EXTRACT_PARALLEL_WORKERS"
-FALLBACK_WORKERS_ENV = "SCHEMA_EXTRACT_FALLBACK_WORKERS"
-RETRY_LIMIT_ENV = "SCHEMA_EXTRACT_CHUNK_RETRY_LIMIT"
-FORMAT_REPAIR_LIMIT_ENV = "SCHEMA_EXTRACT_FORMAT_REPAIR_LIMIT"
 
-DEFAULT_TIMEOUT_SECONDS = 90.0
+DEFAULT_TIMEOUT_SECONDS = 30.0
+DEFAULT_CONNECT_TIMEOUT_SECONDS = 10.0
 DEFAULT_MAX_TOKENS = 4_096
-DEFAULT_WORKERS = 10
-DEFAULT_FALLBACK_WORKERS = 2
-DEFAULT_RETRY_LIMIT = 5
-DEFAULT_FORMAT_REPAIR_LIMIT = 2
+DEFAULT_WORKERS = 25
 MAX_WORKERS = 32
 
 ExtractionProgressSink = Callable[[int, int, str, int], None]
@@ -51,23 +52,52 @@ You are an unstructured information extractor.
 # Objective
 Extract every entity and relation in one source chunk that fits the supplied Schema outline.
 
+# Input
+You receive one `schema_outline` and one `content` chunk.
+Treat `content` as the complete factual boundary for this request.
+Treat `schema_outline` as the set of allowed types and fields, not a form that must be filled.
+
 # Constraints
-- Treat the source chunk as the complete factual input.
-- Use only facts explicitly stated in the source chunk.
+- Create an entity only when the chunk states its identity and at least one factual property required by its type.
+- Include an attribute only when its value is explicit in the chunk.
+- Copy numbers, units, dates, ranges, names, identifiers, and URLs from the chunk.
+- Preserve qualifications and the scope attached to every value.
+- Keep unsupported fields absent. Keep unsupported entities and relations absent.
+- Use empty arrays when the chunk supplies no complete relevant record.
+- Exclude placeholder values, example URLs, empty strings, zero substitutes, memory, inference, and arithmetic estimates.
 - Preserve numbers, units, dates, ranges, scope, and qualifications.
 - Use the Schema outline to determine the target entity types, attributes, and relations.
 - Create stable, readable IDs within each entity type.
 - Include every relation endpoint in entities with the same type and ID.
 - Verify every relation endpoint resolves to an entity in the response.
-- Represent attributes as JSON objects. Use an empty object when the chunk has no attribute facts.
+- Represent attributes as JSON objects.
 - Put factual details in attributes using JSON-compatible values.
-- Return empty arrays when the chunk contains no relevant facts.
 - Return strict JSON with only entities and relations.
+
+# Workflow
+1. Locate explicit facts in the chunk.
+2. Match those facts to allowed Schema types and fields.
+3. Create only records whose identity and values are supported by the same chunk.
+4. Verify every returned attribute value against the chunk text.
+5. Return the JSON object immediately.
 
 # Output Contract
 Each entity contains type, id, name, and attributes.
 Each relation contains type, head, tail, and attributes.
 Relation head and tail are objects containing type and id.
+
+# Examples
+
+## Explicit measurement
+Content: The device generated 30 tokens per second on an iPhone 15 Pro.
+Output: {"entities":[{"type":"DevicePerformanceMeasurement","id":"iphone-15-pro-generation-speed","name":"iPhone 15 Pro generation speed","attributes":{"device":"iPhone 15 Pro","metric_name":"generation speed","metric_value":30,"unit":"tokens per second"}}],"relations":[]}
+
+## Qualitative statement
+Content: Production quantization meets the device memory requirement. The report gives no memory value.
+Output: {"entities":[],"relations":[]}
+
+# Completion
+Every returned identity and attribute value is directly supported by the input chunk.
 """
 
 
@@ -146,7 +176,14 @@ def _client_configuration() -> tuple[OpenAI, str]:
             "Unstructured extraction API configuration is incomplete",
             missing_environment=missing,
         )
-    return OpenAI(api_key=api_key, base_url=base_url, timeout=_timeout_setting()), model
+    request_timeout = _timeout_setting()
+    return OpenAI(
+        api_key=api_key,
+        base_url=base_url,
+        timeout=httpx.Timeout(request_timeout, connect=min(request_timeout, DEFAULT_CONNECT_TIMEOUT_SECONDS)),
+        # Retry only in the batch runner so every failed attempt is visible and bounded.
+        max_retries=0,
+    ), model
 
 
 def _json_object(content: str) -> tuple[dict[str, Any], list[dict[str, str]]]:
@@ -186,74 +223,36 @@ def _extract_one(
         "schema_outline": schema_outline,
         "content": chunk["text"],
     }
-    evidence_refs = [{"source_id": chunk["source_id"], "chunk_id": chunk["chunk_id"]}] if chunk["chunk_id"] else []
-    messages = [
-        {"role": "system", "content": EXTRACTION_SYSTEM_PROMPT},
-        {"role": "user", "content": json.dumps(payload, ensure_ascii=False)},
-    ]
-    repair_limit = _integer_setting(
-        FORMAT_REPAIR_LIMIT_ENV,
-        DEFAULT_FORMAT_REPAIR_LIMIT,
-        minimum=0,
-        maximum=5,
+    evidence_chunk_id = str(chunk.get("evidence_chunk_id") or chunk.get("chunk_id") or "")
+    evidence_refs = [{"source_id": chunk["source_id"], "chunk_id": evidence_chunk_id}] if evidence_chunk_id else []
+    response = client.chat.completions.create(
+        model=model,
+        temperature=0,
+        max_tokens=_integer_setting(MAX_TOKENS_ENV, DEFAULT_MAX_TOKENS, minimum=1, maximum=16_384),
+        response_format={"type": "json_object"},
+        messages=[
+            {"role": "system", "content": EXTRACTION_SYSTEM_PROMPT},
+            {"role": "user", "content": json.dumps(payload, ensure_ascii=False)},
+        ],
     )
-    for repair_count in range(repair_limit + 1):
-        response = client.chat.completions.create(
-            model=model,
-            temperature=0,
-            max_tokens=_integer_setting(MAX_TOKENS_ENV, DEFAULT_MAX_TOKENS, minimum=1, maximum=16_384),
-            response_format={"type": "json_object"},
-            messages=messages,
-        )
-        if not response.choices:
-            raise ExternalServiceError("Extraction model returned no choices", model=model)
-        content = response.choices[0].message.content or ""
-        try:
-            batch, parse_changes = _json_object(content)
-            entities, relations, changes = normalize_instance_batch(
-                entities=batch["entities"],
-                relations=batch["relations"],
-                source_ids=[chunk["source_id"]],
-                evidence_refs=evidence_refs,
-            )
-            changes = [*parse_changes, *changes]
-        except ContractError as exc:
-            if repair_count >= repair_limit:
-                raise
-            messages.extend(
-                [
-                    {"role": "assistant", "content": content},
-                    {
-                        "role": "user",
-                        "content": (
-                            "Correct the JSON object so it satisfies the Output Contract. "
-                            f"Validation error: {exc}. Every entity and relation must include an attributes "
-                            "JSON object; use an empty object when there are no attribute facts. "
-                            "Return only the corrected entities and relations object."
-                        ),
-                    },
-                ]
-            )
-            continue
-        return {
-            "entities": entities,
-            "relations": relations,
-            "format_repair_count": repair_count,
-            "normalization_changes": [
-                change
-                for change in changes
-                if change.get("action") in {"derived", "ignored", "moved", "wrapped"}
-            ],
-        }
-    raise AssertionError("Extraction format repair loop exhausted without returning")
-
-
-def _is_transient_api_error(exc: BaseException) -> bool:
-    return is_external_api_error(exc)
-
-
-def _is_rate_limit_error(exc: BaseException) -> bool:
-    return type(exc).__name__ == "RateLimitError"
+    if not response.choices:
+        raise ExternalServiceError("Extraction model returned no choices", model=model)
+    batch, parse_changes = _json_object(response.choices[0].message.content or "")
+    entities, relations, changes = normalize_instance_batch(
+        entities=batch["entities"],
+        relations=batch["relations"],
+        source_ids=[chunk["source_id"]],
+        evidence_refs=evidence_refs,
+    )
+    return {
+        "entities": entities,
+        "relations": relations,
+        "normalization_changes": [
+            change
+            for change in [*parse_changes, *changes]
+            if change.get("action") in {"derived", "ignored", "moved", "wrapped"}
+        ],
+    }
 
 
 def _emit_extraction_progress(unit_index: int, unit_total: int, status: str, completed_count: int) -> None:
@@ -278,75 +277,26 @@ def _run_chunk_requests(
     chunks: list[dict[str, Any]],
     *,
     on_progress: ExtractionProgressSink | None = None,
-) -> tuple[dict[int, dict[str, Any]], dict[int, int], int, bool]:
+) -> tuple[dict[int, dict[str, Any]], dict[int, dict[str, Any]], int]:
     max_workers = min(
         len(chunks),
         _integer_setting(WORKERS_ENV, DEFAULT_WORKERS, minimum=1, maximum=MAX_WORKERS),
     )
-    fallback_workers = min(
-        max_workers,
-        _integer_setting(FALLBACK_WORKERS_ENV, DEFAULT_FALLBACK_WORKERS, minimum=1, maximum=MAX_WORKERS),
+    results, skipped = run_parallel_units(
+        chunks,
+        workers=max_workers,
+        operation=lambda chunk: _extract_one(client, model, schema_outline, chunk),
+        describe_error=lambda index, chunk, error: {
+            "unit_index": index + 1,
+            "source_id": str(chunk.get("source_id") or ""),
+            "chunk_id": str(chunk.get("chunk_id") or ""),
+            "error_type": type(error).__name__,
+            "error": str(error),
+        },
+        on_progress=on_progress,
+        stage_name="Unstructured extraction",
     )
-    retry_limit = _integer_setting(RETRY_LIMIT_ENV, DEFAULT_RETRY_LIMIT, minimum=0, maximum=10)
-    pending = list(enumerate(chunks))
-    results: dict[int, dict[str, Any]] = {}
-    retries: dict[int, int] = {}
-    active_workers = max_workers
-    fallback_triggered = False
-
-    while pending:
-        wave, pending = pending[:active_workers], pending[active_workers:]
-        if on_progress is not None:
-            for index, _ in wave:
-                on_progress(index + 1, len(chunks), "running", len(results))
-        failures: list[tuple[int, dict[str, Any], BaseException]] = []
-        with ThreadPoolExecutor(max_workers=min(active_workers, len(wave))) as pool:
-            futures = {
-                pool.submit(_extract_one, client, model, schema_outline, chunk): (index, chunk) for index, chunk in wave
-            }
-            for future in as_completed(futures):
-                index, chunk = futures[future]
-                try:
-                    results[index] = future.result()
-                except BaseException as exc:  # Preserve the concrete provider error for retry classification.
-                    failures.append((index, chunk, exc))
-                    continue
-                if on_progress is not None:
-                    # Publish as soon as this request finishes. Waiting for the
-                    # whole worker wave makes a ten-worker run appear to jump
-                    # from 0 to 10 even though chunks completed one by one.
-                    on_progress(index + 1, len(chunks), "done", len(results))
-        if not failures:
-            continue
-        should_reduce_concurrency = any(
-            _is_transient_api_error(error) and not _is_rate_limit_error(error) for _, _, error in failures
-        )
-        if should_reduce_concurrency and active_workers > fallback_workers:
-            active_workers = fallback_workers
-            fallback_triggered = True
-        retry_items: list[tuple[int, dict[str, Any]]] = []
-        for index, chunk, error in failures:
-            count = retries.get(index, 0)
-            if count < retry_limit:
-                retries[index] = count + 1
-                retry_items.append((index, chunk))
-                continue
-            if _is_transient_api_error(error):
-                if on_progress is not None:
-                    on_progress(index + 1, len(chunks), "failed", len(results))
-                raise ExternalServiceError(
-                    "Unstructured extraction API failed after retries",
-                    model=model,
-                    error_type=type(error).__name__,
-                    chunk_index=index + 1,
-                ) from error
-            if on_progress is not None:
-                on_progress(index + 1, len(chunks), "failed", len(results))
-            raise error
-        pending = retry_items + pending
-        if retry_items:
-            wait_before_retry(max(retries[index] for index, _chunk in retry_items))
-    return results, retries, active_workers, fallback_triggered
+    return results, skipped, max_workers
 
 
 @tool
@@ -360,11 +310,11 @@ def extract_unstructured_chunks() -> str:
     if not isinstance(schema_outline, dict):
         raise ContractError("extract stage input requires schema_outline")
     client, model = _client_configuration()
-    initial_workers = min(
+    worker_count = min(
         len(chunks),
         _integer_setting(WORKERS_ENV, DEFAULT_WORKERS, minimum=1, maximum=MAX_WORKERS),
     )
-    results, retries, final_workers, fallback_triggered = _run_chunk_requests(
+    results, skipped, worker_count = _run_chunk_requests(
         client,
         model,
         schema_outline,
@@ -373,7 +323,7 @@ def extract_unstructured_chunks() -> str:
     )
 
     draft = empty_draft()
-    for index in range(len(chunks)):
+    for index in sorted(results):
         draft = merge_draft(draft, results[index])
     normalization_entries = [
         {
@@ -382,7 +332,7 @@ def extract_unstructured_chunks() -> str:
             "chunk_id": chunks[index]["chunk_id"],
             "changes": list(results[index].get("normalization_changes") or []),
         }
-        for index in range(len(chunks))
+        for index in sorted(results)
         if results[index].get("normalization_changes")
     ]
     processed_source_ids = list(
@@ -427,15 +377,9 @@ def extract_unstructured_chunks() -> str:
         "model": model,
         "chunk_count": len(chunks),
         "successful_chunks": len(results),
-        "initial_concurrency": initial_workers,
-        "final_concurrency": final_workers,
-        "fallback_triggered": fallback_triggered,
-        "chunk_retry_counts": {str(index + 1): count for index, count in sorted(retries.items())},
-        "format_repair_counts": {
-            str(index + 1): int(result.get("format_repair_count") or 0)
-            for index, result in sorted(results.items())
-            if result.get("format_repair_count")
-        },
+        "skipped_chunk_count": len(skipped),
+        "skipped_chunks": [skipped[index] for index in sorted(skipped)],
+        "concurrency": worker_count,
         "entity_count": len(validated["entities"]),
         "relation_count": len(validated["relations"]),
         "rejected_relation_count": len(rejected_relations),
@@ -445,14 +389,13 @@ def extract_unstructured_chunks() -> str:
     return json.dumps(
         {
             "ok": True,
-            "processed_chunks": len(chunks),
+            "processed_chunks": len(results),
+            "skipped_chunks": len(skipped),
             "entity_count": summary["entity_count"],
             "relation_count": summary["relation_count"],
             "rejected_relation_count": summary["rejected_relation_count"],
             "draft_path": virtual_session_path(f"intermediate/attempts/{context.attempt_id}/unstructured_draft.json"),
-            "initial_concurrency": initial_workers,
-            "final_concurrency": final_workers,
-            "fallback_triggered": fallback_triggered,
+            "concurrency": worker_count,
         },
         ensure_ascii=False,
     )

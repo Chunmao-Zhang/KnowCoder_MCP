@@ -7,20 +7,26 @@ import time
 from typing import Annotated, Any, Literal
 from uuid import uuid4
 
-from mcp.types import CallToolResult, ResourceLink, TextContent
 from mcp.server.fastmcp import Context
+from mcp.types import CallToolResult, ResourceLink, TextContent
 from pydantic import Field
 
-from knowcoder_workspace_builder.contracts.errors import ContractError, StateConflictError
+from knowcoder_workspace_builder.contracts.errors import (
+    ContractError,
+    StateConflictError,
+)
 from knowcoder_workspace_builder.review.page import write_review_page
 from knowcoder_workspace_builder.review.service import ReviewService
 from knowcoder_workspace_builder.service.builder import BuilderService
 from knowcoder_workspace_builder.storage.project import SelectedProject
 
-from .background import background_job_failure, launch_background_resume, request_background_cancel
+from .background import (
+    background_job_failure,
+    launch_background_resume,
+    request_background_cancel,
+)
 from .schemas import normalize_upload_paths, public_error
 from .task_store import TaskRecord, TaskStore
-
 
 _SERVICE: BuilderService | None = None
 _SERVICE_LOCK = threading.Lock()
@@ -326,12 +332,19 @@ def start_workspace_task(
 
 def wait_for_task_update(
     continuation_token: str,
-    timeout_seconds: Annotated[int, Field(ge=1, le=50)] = 40,
+    timeout_seconds: Annotated[
+        int,
+        Field(
+            ge=1,
+            le=55,
+            description="Seconds to wait for one update. Agent callers must use 40 seconds or less.",
+        ),
+    ] = 40,
 ) -> dict[str, Any] | CallToolResult:
     """Purpose: Wait once for a background task state or stage change.
 
     Use: Call serially while the task status is running.
-    Inputs: Pass the unchanged continuation_token and one bounded timeout.
+    Inputs: Pass the unchanged continuation_token and set timeout_seconds to 40 or less.
     Returns: Stage progress, a Review, completion, failure, or a no-change timeout.
     Next: Wait again only after this call returns and status remains running. Keep same-stage waits and no-change timeouts silent. When event is stage_started, first send one short progress sentence naming that stage, then continue waiting in the same turn. Present a Review, completion, or failure immediately.
     Errors: Stop waiting and report any token, state, or concurrent-wait error.

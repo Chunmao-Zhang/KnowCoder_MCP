@@ -2,22 +2,26 @@
 
 from __future__ import annotations
 
-import json
 import hashlib
+import json
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any
 
 from langchain_core.tools import tool
 
-from knowcoder_workspace_builder.harness.tools.web_search import web_search as _harness_web_search
-from knowcoder_workspace_builder.runtime.invocation_context import active_invocation_context
+from knowcoder_workspace_builder.harness.tools.web_search import (
+    web_search as _harness_web_search,
+)
+from knowcoder_workspace_builder.runtime.invocation_context import (
+    active_invocation_context,
+)
 from knowcoder_workspace_builder.runtime.session_context import active_session_paths
 from knowcoder_workspace_builder.runtime.virtual_paths import virtual_path_for
+from knowcoder_workspace_builder.storage.tool_calls import FetchLedger, SearchLedger
 from knowcoder_workspace_builder.storage.transaction import AtomicWriter
-from knowcoder_workspace_builder.storage.tool_calls import SearchLedger
 
-from .web_content import ranked_search_urls, search_tokens
-from .web_fetch import fetch_and_store_pages, load_web_fetch_settings
+from .web_content import search_tokens
+from .web_fetch import load_web_fetch_settings
 
 
 def _tokens(value: str) -> list[str]:
@@ -32,7 +36,7 @@ def _search_signature(query: str) -> str:
 
 
 def _perform_search(query: str, num_results: int) -> str:
-    return _harness_web_search.invoke({"query": query, "num_results": num_results})
+    return _harness_web_search.invoke({"query": query, "num_results": num_results, "persist_results": False})
 
 
 def _persist_search_bundle(
@@ -112,23 +116,11 @@ def web_search(
         if not failed:
             response["results"] = usable_results
             response["discovery_path"] = _persist_search_bundle(signature, query, step_index, purpose, response)
-            settings = load_web_fetch_settings()
-            ranked_urls = ranked_search_urls(query, usable_results)
-            fetched = fetch_and_store_pages(
-                ranked_urls,
-                query=f"{steps[step_index - 1]} {expected_new_information} {query}",
-                target_successes=settings.successful_pages_per_search,
-                settings=settings,
+            response["candidate_links"] = usable_results
+            response["note"] = (
+                "Review titles and snippets. Fetch only links that may answer this step. "
+                "Search discovery is not formal evidence until fetched content is selected in save_evidence_manifest."
             )
-            response["fetched_sources"] = fetched.get("sources") or []
-            response["fetch_failures"] = fetched.get("failures") or []
-            binding = dict(fetched.get("coverage_binding") or {})
-            binding["step_index"] = step_index
-            response["coverage_binding"] = binding
-            failed = not bool(fetched.get("ok"))
-            if failed:
-                response["error"] = "Search found URLs, but no page produced usable complete content."
-                response["error_type"] = "web_fetch_error"
         ledger.append(
             {
                 "signature": signature,
@@ -136,27 +128,13 @@ def web_search(
                 "query": query,
                 "purpose": purpose,
                 "expected_new_information": expected_new_information,
+                "fetch_count_at_search": len(FetchLedger(active_session_paths(), context.attempt_id).records()),
                 "status": "failed" if failed else "completed",
                 "response": response,
             }
         )
         if failed:
             return json.dumps({"ok": False, "error_type": "external_search_error", **response}, ensure_ascii=False)
-        successful_for_step = sum(
-            1
-            for item in ledger.records()
-            if item.get("step_index") == step_index and item.get("status") == "completed"
-        )
-        if successful_for_step == 1:
-            response["note"] = (
-                "The first pass for this step is complete. Bind this source bundle to the step. "
-                "Move to the next uncovered step. After all first passes, select one focused supplement when needed."
-            )
-        else:
-            response["note"] = (
-                "The focused supplement for this step is complete. Close this step. "
-                "Record remaining limits in unresolved_gaps, then process another step or return the stage result."
-            )
         return json.dumps(
             {
                 "ok": True,
@@ -236,11 +214,11 @@ def web_search_batch(searches: list[dict[str, Any]]) -> str:
                 for item in failures
             ],
             "next_action": (
-                "Keep the successful evidence. Retry only the failed searches with revised sources or queries."
+                "Keep successful candidates and retry only failed evidence gaps."
                 if failures and completed
-                else "Continue evidence collection."
+                else "Review candidates and fetch promising pages."
                 if completed
-                else "Revise the failed searches before continuing."
+                else "Revise failed searches before continuing."
             ),
         },
         ensure_ascii=False,

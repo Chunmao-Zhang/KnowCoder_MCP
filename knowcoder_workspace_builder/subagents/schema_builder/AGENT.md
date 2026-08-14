@@ -2,76 +2,82 @@
 
 ## Task Definition
 
-Expand the accumulated Schema for one batch of confirmed research steps.
-Produce the smallest sufficient patch that preserves prior coverage.
+Optimize question-grounded Schema candidates and save one compact final Schema.
 
 ## Context
 
-Read `question`, the current items in `steps`, and their matching `data_manifest` coverage entries.
-Treat `workspace_context.current_schema_outline` as the authoritative compact index built by earlier steps.
-Apply `revision_requirements` and `user_instruction` from `workspace_context` when present.
-Design only for the supplied batch requirements. Later batches extend the accumulated Schema.
+Read the complete `question`, all confirmed `steps`, `data_manifest`, assigned `sources`, and `workspace_context`.
+The context contains the current Schema, `revision_requirements`, and `user_instruction` when present.
+`build_schema_candidates` reads every assigned evidence chunk.
+It returns merged candidates, conflicts, and the persisted provenance path.
+Each candidate request has a 30-second limit. A failed chunk is recorded and skipped.
+Five consecutive failures stop the stage.
 
 ## Operating Protocol
 
-### Baseline Reuse
-
-- Preserve the accumulated Schema and expand it for the current step.
-- Reuse an existing entity when its identity and meaning fit the requirement.
-- Reuse an existing relation when its endpoints and meaning fit the requirement.
-- Submit new or intentionally updated definitions only.
-- Apply `remove_entity_names` and `remove_relation_names` for explicit user-requested removals.
-
-### Minimal Design
-
-- Represent a scalar property as an `attributes` entry on a suitable entity.
-- Add an entity when records need independent identity, repeated observations, provenance, or lifecycle.
-- Use an entity when relations require distinct endpoints.
-- Treat named facts and example values as instance data.
-- Add relations required to connect information needed by the `question`.
-- Prefer one canonical type and one canonical relation for the same meaning.
-- Keep distinct domain concepts in distinct entity types.
-- Use separate types when identities or relation endpoints differ.
-- Keep entity names in PascalCase and relation names unique and owner-prefixed.
-- Use `str`, `int`, `float`, or `bool` attribute types.
-- Give every entity and every relation a short non-empty description.
-- Set `optional=false` for every relation with `many=true`.
-
-### Efficient Execution
-
-1. Read the current requirements once.
-2. Scan accumulated entity names, attribute signatures, and relation endpoints once.
-3. Identify the minimum missing `entities`, attributes, and `relations`.
-4. Select the smaller reusable design when several designs fit.
-5. Call `save_schema` immediately with one complete patch.
-6. Apply all tool feedback in one repair call when needed.
-7. Finish with a short acknowledgement after `ok=true`.
-
-Make each design choice once.
-Complete one normal batch within two minutes under normal model availability.
+1. Call `build_schema_candidates` once.
+2. Continue only when it returns `ok=true`. Report its error and stop when it fails.
+3. Compare the returned candidates and conflicts with the current Workspace Schema.
+4. Merge aliases that represent the same concept.
+5. Separate different concepts that share a name.
+6. Resolve field types and relation endpoints using the complete question and candidate evidence.
+7. Choose canonical names whose scope matches the complete definition.
+8. Keep the first non-empty candidate description unchanged for each merged entity and relation.
+9. Keep candidate definitions and relation paths needed to answer every confirmed step.
+10. Split every confirmed step into the domain elements required by its final answer.
+11. Audit every confirmed step against the merged Schema before saving.
+12. Identify the entity, attribute, and relation path that stores each required element.
+13. Use an explicit relation when a required association joins two entities.
+14. Link each repeated measurement or result to the concrete subject it describes.
+15. Include applicable value, unit, period, currency, and scale fields for central quantitative comparisons.
+16. Use descriptive fields for context that needs no independent filtering, comparison, lifecycle, or relation.
+17. Use runtime source references and the data manifest for provenance.
+18. Add source identity to the Schema only when the requested analysis treats it as domain data.
+19. Mark non-universal source descriptors as optional.
+20. Keep inverse relations distinct when they carry different meanings.
+21. Combine evidence distributed across candidates when no single candidate defines a supported path completely.
+22. Resolve every supported coverage gap found by the audit in the same draft.
+23. Preserve compatible definitions from the current Workspace Schema.
+24. Add an entity when records need independent identity, repeated observations, provenance, or lifecycle.
+25. Trace every new entity, field, relation, and descriptive example to one or more returned candidates.
+26. Represent scalar properties as entity attributes.
+27. Keep distinct domain concepts in distinct entity types.
+28. Apply explicit revision requirements and user instructions.
+29. Populate removal lists exclusively with names present in the current Workspace Schema.
+30. Treat candidate names as proposals rather than persisted definitions.
+31. Call `save_schema` once with the complete optimized patch.
+32. Apply validation feedback together in one repair call when needed.
 
 ## File Contract
 
+Submit final definitions through `entities`, `relations`, `remove_entity_names`, and `remove_relation_names`.
 Give each entity `name`, `id_type`, `description`, and `attributes`.
 Give each attribute `name`, `type`, and boolean `optional`.
 Give each relation `name`, `head`, `tail`, `description`, and boolean `many` and `optional`.
-The runtime merges definitions by name.
-The runtime compiles the Python Schema from the complete accumulated blueprint.
-The runtime validates the complete accumulated candidate.
-The saved candidate is the source of truth.
+Keep entity names in PascalCase and relation names unique and owner-prefixed.
+Use `str`, `int`, `float`, or `bool` for attribute and ID types.
+Give every entity and every relation a short non-empty description.
+Set `optional=false` for every relation with `many=true`.
+The runtime compiles the Python Schema from the complete semantic blueprint.
 
 ## Quality Standard
 
-- Cover every supplied batch requirement needed by the final deliverable.
-- Prefer compact reusable structures with direct analytical value.
-- Preserve compatible definitions created for earlier steps.
-- Keep the graph connected through meaningful required relations.
-- Use one concise planning pass before the tool call.
+- Cover the complete question with evidence-supported definitions.
+- Use candidates as the only source of new definitions. Keep every expansion grounded in candidate content.
+- Use the complete question and confirmed steps as the coverage checklist.
+- Treat evidence distributed across candidates as valid support for one combined definition.
+- Save after every confirmed step has a complete storage path, or report the unsupported gap explicitly.
+- Keep one canonical definition for each meaning.
+- Keep conflicting meanings separate.
+- Keep relations connected to declared endpoint entities.
+- Finish after `save_schema` returns `ok=true`.
 
 ## Tools
 
-- Use `save_schema` to persist the patch.
+- `build_schema_candidates` generates and mechanically merges candidates.
+  It stores complete Source and Chunk provenance in the returned `provenance_path` file.
+- `save_schema` persists the optimized Schema patch and compiles the Python artifact.
 
 ## Examples
 
-A scalar publication year becomes an attribute. A publication with its own identity and author links becomes an entity.
+A candidate entity named `Company` with repeated `founded_year` fields becomes one `Company` definition with one field.

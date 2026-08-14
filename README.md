@@ -75,7 +75,11 @@ Windows PowerShell:
 .\scripts\install_mcp_runtime.ps1
 ```
 
-The installer uses `uv tool` to prepare Python 3.12 and create an isolated environment. It also creates the user configuration file if it does not already exist. Reinstalling the package does not overwrite an existing configuration.
+The installer uses `uv tool` to download Python 3.12 and create an isolated environment. It does not use an older
+system Python. It installs from official PyPI so an outdated system package mirror cannot silently provide an
+incomplete environment. To use another complete package index explicitly, set `KNOWCODER_PACKAGE_INDEX` before
+running the script. The installer also creates the user configuration file when it is missing. Reinstallation does
+not overwrite an existing configuration.
 
 Configuration locations:
 
@@ -108,6 +112,11 @@ The two model sections may use the same provider and key. Keep real secrets in t
 
 ### 5. Verify the installation without an LLM
 
+The installer installs Crawl4AI, downloads its compatible Chromium browser, runs `crawl4ai-doctor`, and renders a
+local HTML page through KnowCoder's own Doctor. The first installation can therefore take longer than a normal
+Python package install. The upstream `crawl4ai-doctor` opens `https://crawl4ai.com` once to verify a real webpage;
+KnowCoder's `doctor --local` uses only local HTML. Crawl4AI runs locally and does not require an API key.
+
 ```bash
 knowcoder-mcp --version
 knowcoder-mcp doctor --local
@@ -119,7 +128,9 @@ A successful local check ends with:
 PASS local installation; no model or search API was called
 ```
 
-`WARN configuration incomplete` means the program is installed correctly but one or more API settings are still empty. Complete `config.py` before starting a research task.
+`doctor --local` also starts Chromium once and verifies that Crawl4AI can render a local page. It makes no model,
+Serper, or external webpage request. `WARN configuration incomplete` means the program is installed correctly but
+one or more API settings are still empty. Complete `config.py` before starting a research task.
 
 To verify the configured external services later, you may run `knowcoder-mcp doctor`. That optional command makes one small request to each configured model and one Serper request.
 
@@ -220,13 +231,15 @@ Workflow
 1. Detect macOS or Windows.
 2. Install Git or uv only when missing. Use each project's official installation method.
 3. Clone the repository to a normal user-owned tools directory. If it already exists, update it without deleting user files.
-4. Run the repository installation script for this operating system.
+4. Run the repository installation script for this operating system. Let `uv` provision Python 3.12, install
+   Crawl4AI from official PyPI, download Chromium, and run both Crawl checks. Crawl4AI requires no API key. Use a
+   custom `KNOWCODER_PACKAGE_INDEX` only when that index contains every current dependency.
 5. Create the user config.py from config.py.example when it is missing.
 6. Write every provided API value to the user config.py. Keep secrets out of the repository, terminal output, chat output, and host MCP configuration.
 7. When any API value is empty, complete the installation anyway. At the end, state exactly which values are missing and offer me two choices: give the values to you now, or edit the reported user config.py path myself.
 8. Find the absolute knowcoder-mcp executable path.
 9. Register one user-level stdio MCP Server named knowcoder_workspace_builder in the current host. Use the absolute executable path and the single argument `serve`. Preserve every unrelated host setting. Do not bind the registration to one project directory.
-10. Run `knowcoder-mcp --version` and `knowcoder-mcp doctor --local`. This local test must not call any model or search API.
+10. Run `knowcoder-mcp --version` and `knowcoder-mcp doctor --local`. Confirm that Crawl4AI and Chromium pass. This local test must not call any model, search API, or external webpage.
 11. Restart or reload the MCP connection when the host supports it. Inspect the host's MCP tool list and verify that the Server exposes exactly six tools: start_workspace_task, wait_for_task_update, submit_review_decision, read_workspace, find_workspace_tasks, and stop_task.
 12. If all API values are present, run `knowcoder-mcp doctor` once to test the configured model and Serper services. If values are missing, skip this network test and report that research cannot start until config.py is completed.
 
@@ -289,6 +302,12 @@ Run `uv tool update-shell`, restart the terminal, and repeat `knowcoder-mcp --ve
 ### Configuration is incomplete
 
 Open the user `config.py` path shown by `knowcoder-mcp doctor --local`. Fill every empty API key, Base URL, and model name. KnowCoder fails fast and reports the missing field; it does not silently choose another provider.
+
+### Crawl4AI or Chromium setup fails
+
+Run the platform installation script again and keep the original `playwright install chromium` or `crawl4ai-doctor` error. The
+MCP cannot fetch HTML pages until `knowcoder-mcp doctor --local` prints `PASS Crawl4AI and Chromium`. Crawl4AI does
+not use an API key, so adding a key will not fix a missing browser.
 
 ### The Server is installed but absent from the host
 

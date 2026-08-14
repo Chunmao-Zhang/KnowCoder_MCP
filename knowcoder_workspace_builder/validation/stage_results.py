@@ -40,11 +40,11 @@ STAGE_PROTOCOLS: dict[str, StageProtocol] = {
         handoff_fields=("coverage", "sources", "unresolved_gaps", "blocking_gaps"),
         artifact_fields=("evidence_manifest",),
         prompt_terms=("step_index", "status"),
-        model_fields=("coverage", "unresolved_gaps"),
+        model_fields=("coverage", "selected_web_sources", "unresolved_gaps"),
     ),
     "schema_build": StageProtocol(
         agent="schema_builder",
-        input_fields=("question", "steps", "data_manifest", "workspace_context"),
+        input_fields=("question", "steps", "data_manifest", "sources", "workspace_context"),
         handoff_fields=("schema_source", "schema_outline"),
         artifact_fields=("schema_draft",),
         prompt_terms=("entities", "relations", "description", "attributes"),

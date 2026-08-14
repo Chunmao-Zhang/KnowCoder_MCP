@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import ipaddress
 import math
@@ -15,11 +16,11 @@ from typing import Any
 from urllib.parse import urlsplit, urlunsplit
 
 import httpx
-from bs4 import BeautifulSoup
 from pypdf import PdfReader
 
+from knowcoder_workspace_builder.runtime.token_chunks import token_chunks
 
-WEB_CONTENT_FORMAT_VERSION = 2
+WEB_CONTENT_FORMAT_VERSION = 3
 _RETRIEVAL_STOPWORDS = frozenset(
     {
         "a",
@@ -49,13 +50,15 @@ class WebFetchSettings:
     timeout_seconds: float = 20.0
     max_response_bytes: int = 8_000_000
     min_content_chars: int = 160
-    chunk_target_chars: int = 4_000
-    chunk_overlap_chars: int = 240
+    schema_chunk_target_tokens: int = 4_096
+    schema_chunk_overlap_tokens: int = 256
+    extraction_chunk_target_tokens: int = 2_048
+    extraction_chunk_overlap_tokens: int = 128
     relevant_chunks_per_source: int = 4
     relevant_excerpt_chars: int = 1_600
-    successful_pages_per_search: int = 2
     max_concurrency: int = 4
     user_agent: str = "SchemaWorkspaceBuilder/0.1 (+research evidence fetcher)"
+    browser_channel: str = "chromium"
 
 
 @dataclass(frozen=True)
@@ -103,48 +106,107 @@ def _require_public_host(value: str) -> None:
             raise ValueError(f"Webpage URL resolves to a non-public address: {host}")
 
 
-def _html_to_markdown(content: bytes, *, fallback_title: str) -> tuple[str, str]:
-    soup = BeautifulSoup(content, "lxml")
-    title = " ".join((soup.title.get_text(" ", strip=True) if soup.title else fallback_title).split())
-    for tag in soup.select(
-        "script, style, noscript, svg, form, nav, footer, header, aside, "
-        ".sphinxsidebar, .related, .contents, .toctree-wrapper, .headerlink"
-    ):
-        tag.decompose()
-    root = soup.select_one("main, article, [role='main'], .body") or soup.body or soup
-    lines: list[str] = []
-    for element in root.find_all(["h1", "h2", "h3", "h4", "h5", "h6", "p", "li", "pre", "blockquote"]):
-        if element.name != "li" and element.find_parent(["li", "pre", "blockquote"]) is not None:
+def _result_value(result: Any, name: str, default: Any = None) -> Any:
+    if isinstance(result, dict):
+        return result.get(name, default)
+    return getattr(result, name, default)
+
+
+def _crawl_markdown(result: Any) -> str:
+    value = _result_value(result, "markdown", "")
+    if isinstance(value, str):
+        return value
+    if isinstance(value, dict):
+        return str(value.get("raw_markdown") or value.get("fit_markdown") or "")
+    return str(getattr(value, "raw_markdown", "") or getattr(value, "fit_markdown", ""))
+
+
+def _crawl_document(requested_url: str, result: Any, settings: WebFetchSettings) -> FetchedDocument:
+    if not bool(_result_value(result, "success", False)):
+        message = str(_result_value(result, "error_message", "") or "Crawl4AI did not return usable content")
+        raise ValueError(f"Crawl4AI failed for {requested_url}: {message}")
+    final_url = canonical_url(
+        str(_result_value(result, "redirected_url", "") or _result_value(result, "url", "") or requested_url)
+    )
+    _require_public_host(final_url)
+    raw_html = str(_result_value(result, "html", "") or _result_value(result, "cleaned_html", ""))
+    raw_bytes = raw_html.encode("utf-8")
+    if len(raw_bytes) > settings.max_response_bytes:
+        raise ValueError(f"Webpage response exceeds the configured {settings.max_response_bytes} byte limit")
+    markdown = _crawl_markdown(result).strip()
+    metadata = _result_value(result, "metadata", {}) or {}
+    title_value = metadata.get("title", "") if isinstance(metadata, dict) else getattr(metadata, "title", "")
+    fallback_title = urlsplit(final_url).path.rsplit("/", 1)[-1] or urlsplit(final_url).hostname or "Web source"
+    title = " ".join(str(title_value or fallback_title).split())
+    if markdown and not markdown.lstrip().startswith("#"):
+        markdown = f"# {title}\n\n{markdown}"
+    visible_chars = len(re.sub(r"\s+", "", markdown))
+    if visible_chars < settings.min_content_chars:
+        raise ValueError(f"Extracted webpage content is too short ({visible_chars} characters) to use as evidence")
+    return FetchedDocument(
+        requested_url=requested_url,
+        final_url=final_url,
+        title=title,
+        content_type="text/html",
+        raw_bytes=raw_bytes,
+        raw_suffix=".html",
+        markdown=markdown + "\n",
+    )
+
+
+async def crawl_html_documents(
+    urls: list[str],
+    settings: WebFetchSettings,
+    *,
+    validate_network: bool = True,
+) -> tuple[dict[str, FetchedDocument], list[dict[str, str]]]:
+    """Render HTML URLs in one Crawl4AI browser and report failures per URL."""
+    from crawl4ai import (
+        AsyncWebCrawler,
+        BrowserConfig,
+        CacheMode,
+        CrawlerRunConfig,
+        MemoryAdaptiveDispatcher,
+    )
+
+    requested_urls = [canonical_url(url) for url in urls]
+    if validate_network:
+        for url in requested_urls:
+            _require_public_host(url)
+    browser_config = BrowserConfig(headless=True, chrome_channel=settings.browser_channel, user_agent=settings.user_agent)
+    run_config = CrawlerRunConfig(
+        cache_mode=CacheMode.BYPASS,
+        page_timeout=int(settings.timeout_seconds * 1000),
+    )
+    documents: dict[str, FetchedDocument] = {}
+    failures: list[dict[str, str]] = []
+    async with AsyncWebCrawler(config=browser_config) as crawler:
+        results = await crawler.arun_many(
+            requested_urls,
+            config=run_config,
+            dispatcher=MemoryAdaptiveDispatcher(
+                memory_threshold_percent=90,
+                check_interval=1,
+                max_session_permit=min(settings.max_concurrency, len(requested_urls)),
+            ),
+        )
+    result_items = list(results)
+    for index, requested_url in enumerate(requested_urls):
+        result = result_items[index] if index < len(result_items) else None
+        if result is None:
+            failures.append({"url": requested_url, "error": "Crawl4AI returned no result for this URL"})
             continue
-        if element.name == "li":
-            strings = [
-                str(value).strip()
-                for value in element.find_all(string=True)
-                if value.find_parent("li") is element
-            ]
-            text = " ".join(" ".join(strings).split())
-        else:
-            text = " ".join(element.get_text(" ", strip=True).split())
-        if not text:
-            continue
-        if element.name and element.name.startswith("h"):
-            level = int(element.name[1])
-            rendered = f"{'#' * level} {text}"
-        elif element.name == "li":
-            rendered = f"- {text}"
-        elif element.name == "blockquote":
-            rendered = f"> {text}"
-        else:
-            rendered = text
-        if not lines or lines[-1] != rendered:
-            lines.append(rendered)
-    if not lines:
-        text = " ".join(root.get_text(" ", strip=True).split())
-        if text:
-            lines.append(text)
-    heading = title or fallback_title or "Web source"
-    markdown = f"# {heading}\n\n" + "\n\n".join(lines)
-    return heading, markdown.strip() + "\n"
+        try:
+            documents[requested_url] = _crawl_document(requested_url, result, settings)
+        except Exception as exc:  # noqa: BLE001 - each URL must expose its own crawl failure.
+            failures.append({"url": requested_url, "error": str(exc)})
+    return documents, failures
+
+
+def crawl_html_documents_sync(
+    urls: list[str], settings: WebFetchSettings
+) -> tuple[dict[str, FetchedDocument], list[dict[str, str]]]:
+    return asyncio.run(crawl_html_documents(urls, settings))
 
 
 def _pdf_to_markdown(content: bytes, *, fallback_title: str) -> tuple[str, str]:
@@ -215,9 +277,7 @@ def fetch_document(
         suffix = ".txt"
         normalized_type = content_type or "text/plain"
     elif content_type in {"", "text/html", "application/xhtml+xml"} or b"<html" in content[:1024].lower():
-        title, markdown = _html_to_markdown(content, fallback_title=fallback_title)
-        suffix = ".html"
-        normalized_type = content_type or "text/html"
+        raise ValueError("HTML pages must be fetched through Crawl4AI batch rendering")
     else:
         raise ValueError(f"Unsupported webpage content type: {content_type or 'unknown'}")
     visible_chars = len(re.sub(r"\s+", "", markdown))
@@ -245,35 +305,23 @@ def chunk_markdown(source_id: str, markdown: str, settings: WebFetchSettings) ->
     content = str(markdown or "").strip()
     if not content:
         raise ValueError("Cleaned webpage content is empty")
-    target = settings.chunk_target_chars
-    overlap = min(settings.chunk_overlap_chars, max(0, target // 3))
     chunks: list[dict[str, Any]] = []
-    start = 0
-    while start < len(content):
-        hard_end = min(len(content), start + target)
-        end = hard_end
-        if hard_end < len(content):
-            boundary = content.rfind("\n\n", start + target // 2, hard_end)
-            if boundary > start:
-                end = boundary
-        text = content[start:end].strip()
-        if text:
-            chunks.append(
-                {
-                    "source_id": source_id,
-                    "chunk_id": f"{source_id}#chunk_{len(chunks) + 1:04d}",
-                    "heading": _heading_before(content, start),
-                    "start": start,
-                    "end": end,
-                    "text": text,
-                    "content_sha256": hashlib.sha256(text.encode("utf-8")).hexdigest(),
-                }
-            )
-        if end >= len(content):
-            break
-        next_start = max(start + 1, end - overlap)
-        paragraph = content.find("\n\n", next_start, min(len(content), end + overlap + 1))
-        start = paragraph + 2 if paragraph >= 0 and paragraph + 2 < end else next_start
+    for item in token_chunks(
+        content,
+        target_tokens=settings.schema_chunk_target_tokens,
+        overlap_tokens=settings.schema_chunk_overlap_tokens,
+    ):
+        start = int(item["start"])
+        text = str(item["text"])
+        chunks.append(
+            {
+                "source_id": source_id,
+                "chunk_id": f"{source_id}#chunk_{len(chunks) + 1:04d}",
+                "heading": _heading_before(content, start),
+                **item,
+                "content_sha256": hashlib.sha256(text.encode("utf-8")).hexdigest(),
+            }
+        )
     return chunks
 
 
