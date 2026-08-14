@@ -386,7 +386,7 @@ def submit_review_decision(
     """Purpose: Submit one user decision for the current Problem or Schema Review.
 
     Use: Call only when the current user message explicitly confirms the displayed Review or requests a natural-language revision. Never treat the original research request, a waiting status, a Review link, a tool error, or the Agent's own judgement as approval. Never call this tool in the same assistant turn that first presents the Review.
-    Inputs: Pass token, displayed version, action, and instruction only for revise.
+    Inputs: Pass continuation_token, expected_version from the displayed Review, and action="confirm" or action="revise". Pass instruction only with action="revise".
     Returns: The resumed task status and unchanged continuation token.
     Next: Call wait_for_task_update when the resumed task is running.
     Errors: Present stale-version or invalid-decision details to the user.

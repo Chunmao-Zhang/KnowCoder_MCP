@@ -544,13 +544,17 @@ def _run_schema_specialist(
         run_agent="workspace_builder",
         sink=emit_worker_event,
     )
+    initial_build = _schema_candidates_required(stage_input)
     payload = {
         "stage": "schema_build",
         "input": stage_input,
         "execution": {
-            "mode": "parallel_evidence_schema",
+            "mode": "parallel_evidence_schema" if initial_build else "schema_revision",
             "instruction": (
                 "Generate candidates from every assigned evidence chunk, resolve the merged semantic conflicts, "
+                "save one optimized Schema patch, and finish."
+                if initial_build
+                else "Use the current Schema as the base, apply the review or user revision requirements, "
                 "save one optimized Schema patch, and finish."
             ),
         },
@@ -570,6 +574,23 @@ def _run_schema_specialist(
     return result, emitter
 
 
+def _schema_candidates_required(stage_input: dict[str, Any]) -> bool:
+    """Return whether this attempt is creating a Schema from evidence."""
+    workspace_context = stage_input.get("workspace_context")
+    if not isinstance(workspace_context, dict):
+        return True
+    current_schema = str(workspace_context.get("current_schema") or "").strip()
+    revision_requirements = workspace_context.get("revision_requirements")
+    user_instruction = str(workspace_context.get("user_instruction") or "").strip()
+    mode = str(workspace_context.get("mode") or "").strip()
+    has_revision = (
+        mode == "revise"
+        or bool(user_instruction)
+        or isinstance(revision_requirements, list) and bool(revision_requirements)
+    )
+    return not (current_schema and has_revision)
+
+
 def _run_schema_stage(
     *,
     stage_input: dict[str, Any],
@@ -585,7 +606,7 @@ def _run_schema_stage(
         registry=registry,
         config=config,
     )
-    if _successful_tool_payload(result, "build_schema_candidates") is None:
+    if _schema_candidates_required(stage_input) and _successful_tool_payload(result, "build_schema_candidates") is None:
         _raise_required_tool_failure(
             result,
             "build_schema_candidates",
