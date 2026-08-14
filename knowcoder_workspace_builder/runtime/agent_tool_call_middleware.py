@@ -78,44 +78,6 @@ def _current_model_turn_messages(messages: list[Any]) -> list[Any]:
     return messages[start:]
 
 
-class SingleToolPerTurnMiddleware(AgentMiddleware):
-    """Execute only the first tool call from each model response."""
-
-    ERROR_TYPE = "multiple_tools_in_turn"
-
-    def after_model(self, state: Any, runtime: Any) -> dict[str, Any] | None:
-        del runtime
-        latest = next(
-            (message for message in reversed(_state_messages(state)) if isinstance(message, AIMessage)),
-            None,
-        )
-        if latest is None or len(latest.tool_calls) <= 1:
-            return None
-        blocked = latest.tool_calls[1:]
-        return {
-            "messages": [
-                ToolMessage(
-                    content=json.dumps(
-                        {
-                            "ok": False,
-                            "error_type": self.ERROR_TYPE,
-                            "error": (
-                                "This tool call was not executed because another tool call from the same "
-                                "model response runs first. Review that result, then call this tool again "
-                                "in a new assistant turn."
-                            ),
-                        },
-                        ensure_ascii=False,
-                    ),
-                    name=str(tool_call.get("name") or ""),
-                    tool_call_id=str(tool_call.get("id") or ""),
-                    status="error",
-                )
-                for tool_call in blocked
-            ]
-        }
-
-
 class PersistenceDoneStopMiddleware(AgentMiddleware):
     """Stop after a successful stage persistence tool so validation can run.
 
@@ -187,6 +149,51 @@ class PersistenceDoneStopMiddleware(AgentMiddleware):
 
     async def awrap_model_call(self, request: ModelRequest, handler: Callable) -> ModelResponse:
         return self._stop(request) or await handler(request)
+
+
+class EvidenceToolBatchMiddleware(AgentMiddleware):
+    """Keep compatible evidence calls and defer later workflow phases."""
+
+    _SEARCH_TOOLS = frozenset({"web_search", "web_search_batch"})
+    _FETCH_TOOLS = frozenset({"fetch_web_pages"})
+    _SAVE_TOOLS = frozenset({"save_evidence_manifest"})
+    _PHASES = (_SEARCH_TOOLS, _FETCH_TOOLS, _SAVE_TOOLS)
+
+    @classmethod
+    def _filter_message(cls, message: AIMessage) -> AIMessage:
+        calls = list(message.tool_calls or [])
+        present_phases = [phase for phase in cls._PHASES if any(call.get("name") in phase for call in calls)]
+        if len(present_phases) <= 1:
+            return message
+        active_phase = present_phases[0]
+        retained = [call for call in calls if call.get("name") in active_phase]
+        deferred = [str(call.get("name") or "") for call in calls if call not in retained]
+        phase_name = "Search" if active_phase == cls._SEARCH_TOOLS else "Fetch"
+        note = (
+            f"{phase_name} calls were retained. Review their results before calling "
+            f"{', '.join(dict.fromkeys(deferred))}."
+        )
+        content = str(message.content or "").strip()
+        return message.model_copy(
+            update={
+                "content": "\n\n".join(part for part in (content, note) if part),
+                "tool_calls": retained,
+            }
+        )
+
+    @classmethod
+    def _filter_response(cls, response: ModelResponse) -> ModelResponse:
+        result = [
+            cls._filter_message(message) if isinstance(message, AIMessage) else message
+            for message in response.result
+        ]
+        return ModelResponse(result=result, structured_response=response.structured_response)
+
+    def wrap_model_call(self, request: ModelRequest, handler: Callable) -> ModelResponse:
+        return self._filter_response(handler(request))
+
+    async def awrap_model_call(self, request: ModelRequest, handler: Callable) -> ModelResponse:
+        return self._filter_response(await handler(request))
 
 
 class StageCompletionContractMiddleware(AgentMiddleware):
@@ -266,8 +273,9 @@ class StageCompletionContractMiddleware(AgentMiddleware):
     def _instruction(self, stage: str, messages: list[Any], tool_name: str) -> str:
         if stage == "evidence" and not self._has_successful_search(messages):
             action = (
-                "Call web_search_batch now for the uncovered research steps. "
-                "Fetch promising links, select relevant candidate and Chunk IDs, and call save_evidence_manifest."
+                "Use Search to discover evidence for the material gaps. "
+                "Fetch promising links when their body is needed, select relevant candidate and Chunk IDs, "
+                "then call save_evidence_manifest in a separate turn."
             )
         elif stage == "schema_build" and not self._successful(messages, "build_schema_candidates"):
             action = (
@@ -624,7 +632,8 @@ class FailedToolCircuitBreakerMiddleware(AgentMiddleware):
         "Missing states what evidence still needs collection. "
         "Start each line with its label and keep all three lines within 300 characters total. "
         "Put source names, URLs, comparisons, and selection details in tool arguments. "
-        "Group promising URLs for one step in one Fetch call and wait for its result before another Fetch call. "
+        "Group URLs with the same evidence goal in one Fetch call. "
+        "Compatible Search or Fetch calls may run together. Review results before moving to the next tool phase. "
         "Then make the next Search, Fetch, or Save tool call immediately with empty assistant content."
     )
 
@@ -748,17 +757,17 @@ class FailedToolCircuitBreakerMiddleware(AgentMiddleware):
         if indexes and all(completed_by_step[index] >= 1 for index in indexes):
             return self._with_evidence_guide(
                 request,
-                "Every uncovered step has first-pass Search candidates. "
-                "Fetch promising links and keep only pages whose body directly supports the step. "
-                "Run focused Search and Fetch calls for material gaps, then save selected candidate and Chunk IDs.",
+                "Search has produced candidates across the current scope. "
+                "Fetch promising links whose bodies are needed for judgment. "
+                "Resolve material evidence gaps, then save the selected candidate and Chunk IDs.",
             )
         closed = [index for index in indexes if completed_by_step[index] >= 1]
         remaining_focus = [index for index in indexes if completed_by_step[index] < 1]
         if closed:
             return self._with_evidence_guide(
                 request,
-                f"First-pass Search is complete for step indexes {closed}. "
-                f"Search step indexes {remaining_focus}, then Fetch promising links for every step.",
+                f"Search has produced candidates for step indexes {closed}. "
+                f"Use the remaining scope {remaining_focus} to identify material gaps, then Search or Fetch as needed.",
             )
         return self._with_evidence_guide(request, "")
 

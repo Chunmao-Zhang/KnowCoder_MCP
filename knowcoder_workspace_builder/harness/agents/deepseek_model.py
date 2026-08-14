@@ -60,6 +60,17 @@ def _flatten_text_blocks(content: Any) -> Any:
     return "".join(parts)
 
 
+def _supports_parallel_evidence_calls(tools: Any) -> bool:
+    if not isinstance(tools, list):
+        return False
+    names = {
+        str(tool.get("function", {}).get("name") or "")
+        for tool in tools
+        if isinstance(tool, dict) and isinstance(tool.get("function"), dict)
+    }
+    return bool(names.intersection({"web_search", "web_search_batch", "fetch_web_pages"}))
+
+
 def _canonicalize_tool_calls(api_message: dict[str, Any], message: AIMessage) -> None:
     """Send only tool calls that LangChain parsed and the graph can execute."""
     raw_calls = api_message.get("tool_calls")
@@ -172,11 +183,8 @@ class DeepSeekChatOpenAI(ChatOpenAI):
     ) -> dict:
         payload = super()._get_request_payload(input_, stop=stop, **kwargs)
 
-        # Stage persistence can terminate an agent immediately after a successful
-        # save. Keep each model turn to one tool call so every emitted call always
-        # receives its matching ToolMessage before that termination boundary.
         if payload.get("tools"):
-            payload["parallel_tool_calls"] = False
+            payload["parallel_tool_calls"] = _supports_parallel_evidence_calls(payload["tools"])
 
         for message in payload.get("messages", []):
             message["content"] = _flatten_text_blocks(message.get("content"))

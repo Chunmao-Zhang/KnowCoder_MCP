@@ -20,7 +20,7 @@ from knowcoder_workspace_builder.runtime.virtual_paths import virtual_path_for
 from knowcoder_workspace_builder.storage.tool_calls import FetchLedger, SearchLedger
 from knowcoder_workspace_builder.storage.transaction import AtomicWriter
 
-from .web_content import search_tokens
+from .web_content import canonical_url, search_tokens
 from .web_fetch import load_web_fetch_settings
 
 
@@ -68,6 +68,27 @@ def _public_response(response: dict[str, Any]) -> dict[str, Any]:
     return {key: value for key, value in response.items() if key != "persisted"}
 
 
+def _usable_search_results(value: Any) -> list[dict[str, Any]]:
+    """Keep fetchable candidates, canonicalize URLs, and remove duplicates in provider order."""
+    usable: list[dict[str, Any]] = []
+    seen_urls: set[str] = set()
+    for item in value if isinstance(value, list) else []:
+        if not isinstance(item, dict):
+            continue
+        try:
+            link = canonical_url(str(item.get("link") or item.get("url") or ""))
+        except ValueError:
+            continue
+        if link in seen_urls:
+            continue
+        normalized = dict(item)
+        normalized["link"] = link
+        normalized.pop("url", None)
+        usable.append(normalized)
+        seen_urls.add(link)
+    return usable
+
+
 @tool
 def web_search(
     query: str,
@@ -103,12 +124,7 @@ def web_search(
         if not isinstance(response, dict):
             raise ValueError("Search service returned a non-object response")
         results = response.get("results")
-        usable_results = [
-            item
-            for item in (results if isinstance(results, list) else [])
-            if isinstance(item, dict)
-            and any(str(item.get(field) or "").strip() for field in ("title", "link", "snippet"))
-        ]
+        usable_results = _usable_search_results(results)
         failed = bool(response.get("error")) or not usable_results
         if not response.get("error") and not usable_results:
             response["error"] = "Search returned no usable results. Revise the query and retry the same step."

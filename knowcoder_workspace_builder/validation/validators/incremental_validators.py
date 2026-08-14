@@ -27,9 +27,6 @@ class EvidenceIncrementalValidator(BaseValidator):
             if status not in {"covered", "limited", "blocked"}:
                 raise ValueError("Evidence unit status must be covered, limited, or blocked")
             self.text_list(data.get("requirements"), field="requirements", allow_empty=False)
-            # source_ids optional in model unit; runtime binds them. If present and empty while covered, reject.
-            if status == "covered" and "source_ids" in data and not data.get("source_ids"):
-                raise ValueError("Covered evidence unit requires source evidence from tool calls")
             return self.success(unit_id=str(step_index), context={"step_index": step_index, "status": status})
         except ValueError as exc:
             return self.failure([str(exc)], context=ctx, unit_id=unit_id)

@@ -14,6 +14,7 @@ import os
 import threading
 from datetime import datetime
 from pathlib import Path
+from urllib.parse import urlsplit
 
 import httpx
 from langchain_core.tools import tool
@@ -30,7 +31,7 @@ _SEARCH_LOCK = threading.Lock()
 
 
 @tool
-def web_search(query: str, num_results: int = 10) -> str:
+def web_search(query: str, num_results: int = 10, persist_results: bool = True) -> str:
     """Search the web and return top results with title, link, and snippet.
 
     Results are persisted under the current Session's intermediate/sources/web_search/ so that
@@ -41,69 +42,92 @@ def web_search(query: str, num_results: int = 10) -> str:
         query: Search query string.
         num_results: Number of results to return (default 10).
     """
-    with _SEARCH_LOCK:
-        cached = _cached_results(query)
-        if cached is not None:
+    if persist_results:
+        with _SEARCH_LOCK:
+            cached = _cached_results(query)
+    else:
+        cached = None
+    if cached is not None:
+        with _SEARCH_LOCK:
             persisted = _cached_source_refs(query)
-            return json.dumps(
-                {
-                    "query": query,
-                    "results": cached,
-                    "cached": True,
-                    "persisted": persisted,
-                    "note": "Reused persisted web evidence from an earlier search in this run; no new search was issued.",
-                },
-                ensure_ascii=False,
+        return json.dumps(
+            {
+                "query": query,
+                "results": cached,
+                "cached": True,
+                "persisted": persisted,
+                "note": "Reused persisted web evidence from an earlier search in this run; no new search was issued.",
+            },
+            ensure_ascii=False,
+        )
+
+    service_cfg = _load_serper_config()
+    file_key = _configured_secret(service_cfg.get("api_key", ""))
+    project_key = _configured_secret(_read_project_env_key("SERPER_API_KEY"))
+    api_key = project_key or _configured_secret(os.environ.get("SERPER_API_KEY", "")) or file_key
+    if not api_key:
+        return json.dumps({"error": "SERPER_API_KEY not set"}, ensure_ascii=False)
+
+    max_results = int(service_cfg.get("max_results_per_call", 5) or 5)
+    default_results = int(service_cfg.get("default_num_results", 5) or 5)
+    if not num_results:
+        num_results = default_results
+    num_results = max(1, min(int(num_results), max_results))
+    payload = {"q": query, "num": num_results}
+    headers = {"X-API-KEY": api_key, "Content-Type": "application/json"}
+
+    try:
+        def request_search() -> httpx.Response:
+            response = httpx.post(
+                "https://google.serper.dev/search",
+                json=payload,
+                headers=headers,
+                timeout=30,
             )
+            response.raise_for_status()
+            return response
 
-        service_cfg = _load_serper_config()
+        resp = call_with_retries(request_search, is_retryable=is_external_api_error)
+    except httpx.HTTPError as exc:
+        return json.dumps(
+            {"error": f"Search failed: {exc}", "error_type": "external_search_error"},
+            ensure_ascii=False,
+        )
 
-        file_key = _configured_secret(service_cfg.get("api_key", ""))
-        # Prefer live project .env so key rotations take effect without full process restart.
-        project_key = _configured_secret(_read_project_env_key("SERPER_API_KEY"))
-        api_key = project_key or _configured_secret(os.environ.get("SERPER_API_KEY", "")) or file_key
-        if not api_key:
-            return json.dumps({"error": "SERPER_API_KEY not set"}, ensure_ascii=False)
-
-        max_results = int(service_cfg.get("max_results_per_call", 5) or 5)
-        default_results = int(service_cfg.get("default_num_results", 5) or 5)
-        if not num_results:
-            num_results = default_results
-        num_results = max(1, min(int(num_results), max_results))
-
-        payload = {"q": query, "num": num_results}
-        headers = {"X-API-KEY": api_key, "Content-Type": "application/json"}
-
-        try:
-            def request_search() -> httpx.Response:
-                response = httpx.post(
-                    "https://google.serper.dev/search",
-                    json=payload,
-                    headers=headers,
-                    timeout=30,
-                )
-                response.raise_for_status()
-                return response
-
-            resp = call_with_retries(request_search, is_retryable=is_external_api_error)
-        except httpx.HTTPError as e:
-            return json.dumps(
-                {"error": f"Search failed: {e}", "error_type": "external_search_error"},
-                ensure_ascii=False,
-            )
-
-        data = resp.json()
-        organic = data.get("organic", [])[:num_results]
-        results = [
+    data = resp.json()
+    organic = data.get("organic", [])[:num_results]
+    results = []
+    for item in organic:
+        link = str(item.get("link") or "")
+        results.append(
             {
                 "title": item.get("title", ""),
-                "link": item.get("link", ""),
+                "link": link,
                 "snippet": item.get("snippet", ""),
+                "date": item.get("date", ""),
+                "source": item.get("source", ""),
+                "domain": str(urlsplit(link).hostname or ""),
             }
-            for item in organic
-        ]
+        )
 
-        persisted = _persist_results(query, results)
+    if persist_results:
+        with _SEARCH_LOCK:
+            cached = _cached_results(query)
+            if cached is not None:
+                persisted = _cached_source_refs(query)
+                return json.dumps(
+                    {
+                        "query": query,
+                        "results": cached,
+                        "cached": True,
+                        "persisted": persisted,
+                        "note": "Reused persisted web evidence from an earlier search in this run; no new search was issued.",
+                    },
+                    ensure_ascii=False,
+                )
+            persisted = _persist_results(query, results)
+    else:
+        persisted = []
     response: dict[str, object] = {"query": query, "results": results}
     if persisted:
         response["persisted"] = [
@@ -202,6 +226,9 @@ def _cached_results(query: str) -> list[dict] | None:
                 "title": record.get("title", ""),
                 "link": record.get("url", ""),
                 "snippet": record.get("snippet", ""),
+                "date": record.get("date", ""),
+                "source": record.get("source", ""),
+                "domain": record.get("domain", ""),
             }
         )
     return results or None
@@ -253,6 +280,9 @@ def _persist_results(query: str, results: list[dict]) -> list[dict]:
             "url": item.get("link", ""),
             "title": item.get("title", ""),
             "snippet": item.get("snippet", ""),
+            "date": item.get("date", ""),
+            "source": item.get("source", ""),
+            "domain": item.get("domain", ""),
             "retrieved_at": retrieved_at,
             "collected_by_agent": agent_id,
             "source_kind": "web",

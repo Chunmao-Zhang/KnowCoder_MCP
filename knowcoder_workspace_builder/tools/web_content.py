@@ -70,6 +70,7 @@ class FetchedDocument:
     raw_bytes: bytes
     raw_suffix: str
     markdown: str
+    fetch_method: str = "unknown"
 
 
 def canonical_url(value: str) -> str:
@@ -151,6 +152,7 @@ def _crawl_document(requested_url: str, result: Any, settings: WebFetchSettings)
         raw_bytes=raw_bytes,
         raw_suffix=".html",
         markdown=markdown + "\n",
+        fetch_method="crawl4ai",
     )
 
 
@@ -337,6 +339,7 @@ def fetch_document(
         raw_bytes=content,
         raw_suffix=suffix,
         markdown=markdown,
+        fetch_method="http_pdf" if normalized_type == "application/pdf" else "http_text",
     )
 
 

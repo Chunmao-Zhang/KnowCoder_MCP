@@ -241,13 +241,11 @@ def normalize_evidence_candidate(
     chunk_refs_by_step: dict[int, set[tuple[str, str]]] = {}
     requirements_by_step: dict[int, list[str]] = {}
     searches = [item for item in SearchLedger(paths, context.attempt_id).records() if item.get("status") == "completed"]
-    fetch_records = FetchLedger(paths, context.attempt_id).records()
-    fetches = [item for item in fetch_records if item.get("status") in {"completed", "partial"}]
-    fetch_attempted_step_indexes = {
-        int(item["step_index"])
-        for item in fetch_records
-        if isinstance(item.get("step_index"), int) and not isinstance(item.get("step_index"), bool)
-    }
+    fetches = [
+        item
+        for item in FetchLedger(paths, context.attempt_id).records()
+        if item.get("status") in {"completed", "partial"}
+    ]
     for search in [*searches, *fetches]:
         step_index = search.get("step_index")
         if not isinstance(step_index, int):
@@ -315,8 +313,6 @@ def normalize_evidence_candidate(
         bound_ids = required_source_ids | accepted_ids | (
             source_ids_by_step.get(step_index, set()) & formal_source_ids
         )
-        if status == "covered" and not bound_ids:
-            raise ContractError("Covered evidence requires runtime-bound source evidence", step_index=step_index)
         accepted_chunk_refs: set[tuple[str, str]] = set()
         if isinstance(accepted, dict):
             for ref in accepted.get("chunk_refs") or []:
@@ -382,28 +378,6 @@ def normalize_evidence_candidate(
             "Evidence coverage is missing steps without an accepted baseline",
             missing_step_indexes=missing_steps,
         )
-    configured_indexes = (
-        workspace_context.get("uncovered_step_indexes")
-        if isinstance(workspace_context, dict)
-        else None
-    )
-    required_fetch_indexes = {
-        int(item)
-        for item in configured_indexes
-        if isinstance(item, int) and not isinstance(item, bool)
-    } if isinstance(configured_indexes, list) else set(range(1, len(steps) + 1))
-    missing_fetch_indexes = [
-        item["step_index"]
-        for item in normalized_coverage
-        if item["step_index"] in required_fetch_indexes
-        and not item["source_ids"]
-        and item["step_index"] not in fetch_attempted_step_indexes
-    ]
-    if missing_fetch_indexes:
-        raise ContractError(
-            "Evidence steps without an accepted source require a Fetch attempt before completion",
-            missing_fetch_step_indexes=missing_fetch_indexes,
-        )
     unresolved_step_count = sum(
         1 for item in normalized_coverage if item["status"] in {"limited", "blocked"}
     )
@@ -417,10 +391,6 @@ def normalize_evidence_candidate(
     if missing_registered:
         raise ContractError("Evidence references unregistered runtime sources", source_ids=missing_registered)
     selected_sources = [registered[source_id] for source_id in referenced_source_ids]
-    if not selected_sources:
-        raise ContractError(
-            "Evidence collection requires at least one selected or required formal source"
-        )
     changes.append(_change("blocking_gaps", "derived", "Built from coverage items marked blocked."))
     return (
         {

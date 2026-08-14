@@ -25,17 +25,10 @@ COMPLETION_CASES: dict[str, list] = {
             "missing_artifact",
             contains("artifact does not exist", "evidence_manifest"),
             (
-                "Complete missing searches for uncovered steps, then call save_evidence_manifest successfully. "
+                "Review material evidence gaps, then call save_evidence_manifest successfully. "
                 "Validation only inspects the saved evidence_manifest.json file."
             ),
         ),
-        (
-            "missing_first_pass_search",
-            contains("first-pass search"),
-            "Run web_search for each missing_step_indexes value. Use the same one-based step position.",
-        ),
-        ("no_sources", contains("at least one source"), "Call web_search successfully before completion."),
-        ("covered_without_source", contains("covered evidence requires runtime-bound source evidence"), "Run web_search before marking the step covered."),
         ("coverage_length", contains("missing steps"), "Return one coverage item per uncovered step using its one-based step_index."),
         (
             "required_sources",

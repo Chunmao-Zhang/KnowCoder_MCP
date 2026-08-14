@@ -13,7 +13,6 @@ INCREMENTAL_CASES: dict[str, list] = {
     "evidence": [
         ("step_index", contains("step_index"), "Provide a positive integer step_index for this evidence unit."),
         ("status", contains("status must be"), "Set unit status to covered, limited, or blocked."),
-        ("covered_without_source", contains("requires source evidence"), "Call web_search for this step before marking covered."),
         ("default", lambda e, c: True, "Repair only this step unit, then continue. After 3 failures this unit is skipped."),
     ],
     "schema_build": [

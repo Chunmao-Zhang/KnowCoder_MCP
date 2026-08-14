@@ -193,6 +193,7 @@ def _persist_candidate(
         "query": query,
         "requested_url": document.requested_url,
         "url": document.final_url,
+        "fetch_method": document.fetch_method,
         "title": document.title,
         "content_type": document.content_type,
         "content_sha256": content_hash,
@@ -233,8 +234,12 @@ def _candidate_summary(
     ranked = relevant_chunks(query, chunks, top_k=settings.relevant_chunks_per_source)
     return {
         "candidate_id": str(metadata["candidate_id"]),
+        "requested_url": str(metadata.get("requested_url") or metadata["url"]),
+        "final_url": str(metadata["url"]),
         "url": str(metadata["url"]),
         "title": str(metadata["title"]),
+        "fetch_method": str(metadata.get("fetch_method") or "unknown"),
+        "status": "completed",
         "character_count": int(metadata["character_count"]),
         "chunk_count": int(metadata["chunk_count"]),
         "relevant_chunks": [
@@ -387,14 +392,22 @@ def fetch_candidate_pages(
     if not normalized_urls:
         raise ValueError("At least one webpage URL is required")
     candidates: list[dict[str, Any]] = []
-    failures: list[dict[str, str]] = []
+    failures: list[dict[str, Any]] = []
     lightweight_urls = [url for url in normalized_urls if urlsplit(url).path.casefold().endswith((".pdf", ".txt"))]
     html_urls = [url for url in normalized_urls if url not in lightweight_urls]
     documents: dict[str, FetchedDocument] = {}
     if html_urls:
         crawled, crawl_failures = crawl_html_documents_sync(html_urls, active_settings)
         documents.update(crawled)
-        failures.extend(crawl_failures)
+        failures.extend(
+            {
+                **failure,
+                "requested_url": str(failure.get("url") or ""),
+                "fetch_method": "crawl4ai",
+                "status": "failed",
+            }
+            for failure in crawl_failures
+        )
     with ThreadPoolExecutor(max_workers=min(active_settings.max_concurrency, len(lightweight_urls) or 1)) as pool:
         futures = {
             pool.submit(
@@ -410,7 +423,15 @@ def fetch_candidate_pages(
             try:
                 documents[url] = future.result()
             except Exception as exc:  # noqa: BLE001 - every failed candidate is reported explicitly.
-                failures.append({"url": url, "error": str(exc)})
+                failures.append(
+                    {
+                        "url": url,
+                        "requested_url": url,
+                        "fetch_method": "http_pdf" if urlsplit(url).path.casefold().endswith(".pdf") else "http_text",
+                        "status": "failed",
+                        "error": str(exc),
+                    }
+                )
     for url in normalized_urls:
         document = documents.get(url)
         if document is None:
@@ -443,11 +464,15 @@ def _prior_url_outcomes(ledger: FetchLedger) -> dict[str, dict[str, Any]]:
             url = str(failure.get("url") or "").strip()
             error = str(failure.get("error") or "").strip()
             if url and error:
-                outcomes[canonical_url(url)] = {"status": "failed", "error": error}
+                outcomes[canonical_url(url)] = {
+                    "status": "failed",
+                    "error": error,
+                    "fetch_method": str(failure.get("fetch_method") or "unknown"),
+                }
         for candidate in response.get("candidates") or []:
             if not isinstance(candidate, dict):
                 continue
-            url = str(candidate.get("url") or "").strip()
+            url = str(candidate.get("requested_url") or candidate.get("url") or "").strip()
             candidate_id = str(candidate.get("candidate_id") or "").strip()
             if url and candidate_id:
                 outcomes[canonical_url(url)] = {"status": "completed", "candidate_id": candidate_id}
@@ -475,7 +500,16 @@ def _fetch_with_attempt_cache(
             metadata = _candidate_metadata(str(outcome["candidate_id"]))
             candidates.append(_candidate_summary(metadata, query=query, settings=settings, cached=True))
         else:
-            failures.append({"url": url, "error": str(outcome["error"]), "cached": True})
+            failures.append(
+                {
+                    "url": url,
+                    "requested_url": url,
+                    "fetch_method": str(outcome.get("fetch_method") or "unknown"),
+                    "status": "failed",
+                    "error": str(outcome["error"]),
+                    "cached": True,
+                }
+            )
     if pending_urls:
         fetched = fetch_candidate_pages(
             pending_urls,
@@ -502,7 +536,7 @@ def _fetch_with_attempt_cache(
 
 @tool
 def fetch_web_pages(urls: list[str], step_index: int, purpose: str) -> str:
-    """Fetch webpage candidates and return compact, question-relevant chunks for review."""
+    """Fetch URL candidates in parallel for one evidence goal and return relevant chunks per URL."""
     try:
         context = active_invocation_context()
         if context.stage != "evidence":
