@@ -7,7 +7,7 @@ import json
 import os
 from collections.abc import Callable
 from pathlib import Path
-from typing import Any
+from typing import Any, ClassVar
 
 from langchain.agents.middleware.types import (
     AgentMiddleware,
@@ -78,6 +78,44 @@ def _current_model_turn_messages(messages: list[Any]) -> list[Any]:
     return messages[start:]
 
 
+class SingleToolPerTurnMiddleware(AgentMiddleware):
+    """Execute only the first tool call from each model response."""
+
+    ERROR_TYPE = "multiple_tools_in_turn"
+
+    def after_model(self, state: Any, runtime: Any) -> dict[str, Any] | None:
+        del runtime
+        latest = next(
+            (message for message in reversed(_state_messages(state)) if isinstance(message, AIMessage)),
+            None,
+        )
+        if latest is None or len(latest.tool_calls) <= 1:
+            return None
+        blocked = latest.tool_calls[1:]
+        return {
+            "messages": [
+                ToolMessage(
+                    content=json.dumps(
+                        {
+                            "ok": False,
+                            "error_type": self.ERROR_TYPE,
+                            "error": (
+                                "This tool call was not executed because another tool call from the same "
+                                "model response runs first. Review that result, then call this tool again "
+                                "in a new assistant turn."
+                            ),
+                        },
+                        ensure_ascii=False,
+                    ),
+                    name=str(tool_call.get("name") or ""),
+                    tool_call_id=str(tool_call.get("id") or ""),
+                    status="error",
+                )
+                for tool_call in blocked
+            ]
+        }
+
+
 class PersistenceDoneStopMiddleware(AgentMiddleware):
     """Stop after a successful stage persistence tool so validation can run.
 
@@ -86,14 +124,14 @@ class PersistenceDoneStopMiddleware(AgentMiddleware):
     The outer harness still validates the saved candidate and can request repair.
     """
 
-    _STAGE_TOOLS = {
+    _STAGE_TOOLS: ClassVar[dict[str, str]] = {
         "problem": "save_problem_review",
         "schema_judge": "save_schema_judgement",
         "extract": "extract_unstructured_chunks",
         "structured_extract": "append_instances_batches_from_file",
         "document": "save_workspace_readme",
     }
-    _FAILURE_TOOLS = {
+    _FAILURE_TOOLS: ClassVar[dict[str, str]] = {
         **_STAGE_TOOLS,
         "evidence": "save_evidence_manifest",
         "schema_build": "save_schema",
@@ -103,7 +141,7 @@ class PersistenceDoneStopMiddleware(AgentMiddleware):
     def _stop(self, request: ModelRequest) -> ModelResponse | None:
         try:
             stage = active_invocation_context().stage
-        except Exception:
+        except BuilderError:
             return None
         stage = str(stage or "")
         tool_name = self._FAILURE_TOOLS.get(stage)
@@ -154,7 +192,7 @@ class PersistenceDoneStopMiddleware(AgentMiddleware):
 class StageCompletionContractMiddleware(AgentMiddleware):
     """Require each Builder specialist to complete its declared durable action."""
 
-    _REQUIRED_TOOLS = {
+    _REQUIRED_TOOLS: ClassVar[dict[str, str]] = {
         "problem": "save_problem_review",
         "evidence": "save_evidence_manifest",
         "schema_build": "save_schema",
@@ -247,7 +285,7 @@ class StageCompletionContractMiddleware(AgentMiddleware):
     def after_model(self, state: Any, runtime: Any) -> dict[str, Any] | None:
         try:
             stage = str(active_invocation_context().stage or "")
-        except Exception:
+        except BuilderError:
             return None
         tool_name = self._REQUIRED_TOOLS.get(stage)
         if not tool_name:
@@ -316,7 +354,7 @@ class StructuredExtractProgressMiddleware(AgentMiddleware):
         try:
             if active_invocation_context().stage != "structured_extract":
                 return None
-        except Exception:
+        except BuilderError:
             return None
         counts = self._counts(list(request.messages or []))
         if counts["append"] > 0 or counts["write_file"] > 0 or counts["execute_code"] > 0:
@@ -348,7 +386,7 @@ class StructuredExtractProgressMiddleware(AgentMiddleware):
 class RunAttemptGuardMiddleware(AgentMiddleware):
     """Reject tool calls from missing, cancelled, or already finished attempts."""
 
-    _OBJECTIVES = {
+    _OBJECTIVES: ClassVar[dict[str, str]] = {
         "workspace_readme_browser": "Read current Workspace metadata needed for problem clarification.",
         "source_reader": "Read the sources assigned to the current stage.",
         "web_search": "Resolve one declared evidence coverage gap.",

@@ -54,11 +54,34 @@ Restart the terminal after installing `uv`, then verify it:
 uv --version
 ```
 
-### 2. Download the repository
+### 2. Download or update the repository
+
+Use the same user-level source directory on every computer. Repeating these commands updates an existing installation
+without touching API configuration or Workspace data.
+
+macOS:
 
 ```bash
-git clone https://github.com/Chunmao-Zhang/KnowCoder_MCP.git
-cd KnowCoder_MCP
+SOURCE_DIR="$HOME/.local/share/knowcoder-mcp/source"
+mkdir -p "$(dirname "$SOURCE_DIR")"
+if [ -d "$SOURCE_DIR/.git" ]; then
+  git -C "$SOURCE_DIR" pull --ff-only origin main
+else
+  git clone https://github.com/Chunmao-Zhang/KnowCoder_MCP.git "$SOURCE_DIR"
+fi
+cd "$SOURCE_DIR"
+```
+
+Windows PowerShell:
+
+```powershell
+$SourceDir = Join-Path $env:LOCALAPPDATA "knowcoder-mcp\source"
+if (Test-Path (Join-Path $SourceDir ".git")) {
+    git -C $SourceDir pull --ff-only origin main
+} else {
+    git clone https://github.com/Chunmao-Zhang/KnowCoder_MCP.git $SourceDir
+}
+Set-Location $SourceDir
 ```
 
 ### 3. Install the command
@@ -75,7 +98,7 @@ Windows PowerShell:
 .\scripts\install_mcp_runtime.ps1
 ```
 
-The installer uses `uv tool` to download Python 3.12 and create an isolated environment. It does not use an older
+The installer force-reinstalls the checked-out source with `uv tool`, downloads Python 3.12, and creates an isolated environment. It does not use an older
 system Python. It installs from official PyPI so an outdated system package mirror cannot silently provide an
 incomplete environment. To use another complete package index explicitly, set `KNOWCODER_PACKAGE_INDEX` before
 running the script. The installer also creates the user configuration file when it is missing. Reinstallation does
@@ -230,7 +253,9 @@ Install and register the released KnowCoder MCP without changing unrelated host 
 Workflow
 1. Detect macOS or Windows.
 2. Install Git or uv only when missing. Use each project's official installation method.
-3. Clone the repository to a normal user-owned tools directory. If it already exists, update it without deleting user files.
+3. Use exactly one user-level source directory: `~/.local/share/knowcoder-mcp/source` on macOS or
+   `%LOCALAPPDATA%\knowcoder-mcp\source` on Windows. Clone the repository there when missing. When it already exists,
+   run `git pull --ff-only origin main`. Stop and report any Git conflict instead of installing stale source.
 4. Run the repository installation script for this operating system. Let `uv` provision Python 3.12, install
    Crawl4AI from official PyPI, download Chromium, and run both Crawl checks. Crawl4AI requires no API key. Use a
    custom `KNOWCODER_PACKAGE_INDEX` only when that index contains every current dependency.

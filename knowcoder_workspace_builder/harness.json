@@ -41,6 +41,11 @@
   "defaults": {
     "model": "deepseek/deepseek-v4-flash",
     "temperature": 0,
+    "middleware": [
+      {
+        "type": "knowcoder_workspace_builder.runtime.agent_tool_call_middleware.SingleToolPerTurnMiddleware"
+      }
+    ],
     "tools": {
       "allow": [
         "*"
