@@ -8,16 +8,19 @@ Optimize question-grounded Schema candidates and save one compact final Schema.
 
 Read the complete `question`, all confirmed `steps`, `data_manifest`, assigned `sources`, and `workspace_context`.
 The context contains the current Schema, `revision_requirements`, and `user_instruction` when present.
-`build_schema_candidates` reads every assigned evidence chunk.
+On an initial build, `build_schema_candidates` reads every assigned evidence chunk.
 It returns merged candidates, conflicts, and the persisted provenance path.
 Each candidate request has a 30-second limit. A failed chunk is recorded and skipped.
 Five consecutive failures stop the stage.
 
 ## Operating Protocol
 
-1. Call `build_schema_candidates` once.
-2. Continue only when it returns `ok=true`. Report its error and stop when it fails.
-3. Compare the returned candidates and conflicts with the current Workspace Schema.
+1. Read the current Workspace Schema and `revision_requirements`.
+   Identify whether this is an initial build or a review revision.
+2. For an initial build when the current Schema is absent, call `build_schema_candidates` once.
+   Continue only when it returns `ok=true`.
+3. For a review revision, use the current Schema as the complete base.
+   Apply the explicit revision requirements and proceed directly to `save_schema`.
 4. Merge aliases that represent the same concept.
 5. Separate different concepts that share a name.
 6. Resolve field types and relation endpoints using the complete question and candidate evidence.
@@ -39,7 +42,8 @@ Five consecutive failures stop the stage.
 22. Resolve every supported coverage gap found by the audit in the same draft.
 23. Preserve compatible definitions from the current Workspace Schema.
 24. Add an entity when records need independent identity, repeated observations, provenance, or lifecycle.
-25. Trace every new entity, field, relation, and descriptive example to one or more returned candidates.
+25. Trace initial definitions to returned candidates.
+    Trace review changes to the current Schema and explicit revision requirements.
 26. Represent scalar properties as entity attributes.
 27. Keep distinct domain concepts in distinct entity types.
 28. Apply explicit revision requirements and user instructions.
@@ -63,7 +67,8 @@ The runtime compiles the Python Schema from the complete semantic blueprint.
 ## Quality Standard
 
 - Cover the complete question with evidence-supported definitions.
-- Use candidates as the only source of new definitions. Keep every expansion grounded in candidate content.
+- Use candidates for initial definitions.
+- Use the accepted current Schema and explicit revision requirements for review changes.
 - Use the complete question and confirmed steps as the coverage checklist.
 - Treat evidence distributed across candidates as valid support for one combined definition.
 - Save after every confirmed step has a complete storage path, or report the unsupported gap explicitly.
@@ -74,7 +79,7 @@ The runtime compiles the Python Schema from the complete semantic blueprint.
 
 ## Tools
 
-- `build_schema_candidates` generates and mechanically merges candidates.
+- `build_schema_candidates` generates and mechanically merges candidates for an initial build.
   It stores complete Source and Chunk provenance in the returned `provenance_path` file.
 - `save_schema` persists the optimized Schema patch and compiles the Python artifact.
 

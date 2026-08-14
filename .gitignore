@@ -1,7 +1,7 @@
 .env
 .env.*
 !.env.example
-config.py
+/config.py
 .venv/
 .mcp-runtime/
 .knowcoder_workspace/

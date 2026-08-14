@@ -569,6 +569,22 @@ class EvidenceManifestPreflightMiddleware(AgentMiddleware):
 
 
 class FailedToolCircuitBreakerMiddleware(AgentMiddleware):
+    _EVIDENCE_REASONING_GUIDE = (
+        "Keep private reasoning_content to exactly three short one-sentence lines: "
+        "Need states what the research must establish; Searched states what completed searches established; "
+        "Missing states what evidence still needs collection. "
+        "Start each line with its label and keep all three lines within 300 characters total. "
+        "Put source names, URLs, comparisons, and selection details in tool arguments. "
+        "Then make the next Search, Fetch, or Save tool call immediately with empty assistant content."
+    )
+
+    @classmethod
+    def _with_evidence_guide(cls, request: ModelRequest, action: str) -> ModelRequest:
+        current = getattr(request, "system_message", None)
+        base = str(getattr(current, "content", "") or "")
+        content = "\n\n".join(part for part in (base, action, cls._EVIDENCE_REASONING_GUIDE) if part)
+        return request.override(system_message=SystemMessage(content=content))
+
     """Allow limited external-search retries before opening the circuit.
 
     Prompt policy: a failed search step may be retried with corrected input up to
@@ -656,9 +672,10 @@ class FailedToolCircuitBreakerMiddleware(AgentMiddleware):
         return ModelResponse(result=[AIMessage(content=error)])
 
     def _guide_search_completion(self, request: ModelRequest) -> ModelRequest:
-        messages = list(request.messages or [])
         try:
             context = active_invocation_context()
+            if context.stage != "evidence":
+                return request
             workspace_context = context.input.get("workspace_context")
             configured_indexes = (
                 workspace_context.get("uncovered_step_indexes")
@@ -679,25 +696,21 @@ class FailedToolCircuitBreakerMiddleware(AgentMiddleware):
         except (BuilderError, KeyError, TypeError, ValueError):
             return request
         if indexes and all(completed_by_step[index] >= 1 for index in indexes):
-            instruction = SystemMessage(
-                content=(
-                    "Every uncovered step has first-pass Search candidates. "
-                    "Fetch promising links and keep only pages whose body directly supports the step. "
-                    "Run focused Search and Fetch calls for material gaps, then save selected candidate IDs."
-                )
+            return self._with_evidence_guide(
+                request,
+                "Every uncovered step has first-pass Search candidates. "
+                "Fetch promising links and keep only pages whose body directly supports the step. "
+                "Run focused Search and Fetch calls for material gaps, then save selected candidate IDs.",
             )
-            return request.override(messages=[*messages, instruction])
         closed = [index for index in indexes if completed_by_step[index] >= 1]
         remaining_focus = [index for index in indexes if completed_by_step[index] < 1]
         if closed:
-            instruction = SystemMessage(
-                content=(
-                    f"First-pass Search is complete for step indexes {closed}. "
-                    f"Search step indexes {remaining_focus}, then Fetch promising links for every step."
-                )
+            return self._with_evidence_guide(
+                request,
+                f"First-pass Search is complete for step indexes {closed}. "
+                f"Search step indexes {remaining_focus}, then Fetch promising links for every step.",
             )
-            return request.override(messages=[*messages, instruction])
-        return request
+        return self._with_evidence_guide(request, "")
 
     def wrap_model_call(self, request: ModelRequest, handler: Callable) -> ModelResponse:
         return self._terminal_failure(list(request.messages or [])) or handler(self._guide_search_completion(request))

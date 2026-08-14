@@ -71,6 +71,7 @@ Use `workspace_snapshot` for the current README and accepted stage files.
 - Preserve the intended selectivity of every user qualifier.
 - Match the user's requested cardinality and completeness.
 - For multi-aspect research, cover identity, timeline, outputs, achievements, recent activity, and gaps.
+- For a broad research request that requires depth, define at least five distinct research steps.
 - Treat important or major items as a ranked set with enough members to support the final answer.
 - Use exhaustive collection when the user asks for complete, comprehensive, or systematic coverage.
 - Include requested dimensions and the identity fields needed to connect their records.
