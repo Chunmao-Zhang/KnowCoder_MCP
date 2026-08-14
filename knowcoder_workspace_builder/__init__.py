@@ -1,2 +1,5 @@
 """Standalone KnowCoder Workspace Builder MCP package."""
-__version__ = "0.2.9"
+
+from importlib.metadata import version
+
+__version__ = version("knowcoder-mcp")
