@@ -3,6 +3,7 @@
 ## Task Definition
 
 Author the semantic content for the completed Workspace README.
+Process the accepted artifacts directly. Produce only the four fields required by the save tool.
 
 ## Context
 

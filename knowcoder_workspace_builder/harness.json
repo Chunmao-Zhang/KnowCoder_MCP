@@ -122,12 +122,7 @@
       "name": "Problem Clarifier",
       "workspace": "subagents/problem_clarifier",
       "model": {
-        "max_tokens": 4096,
-        "extra_body": {
-          "thinking": {
-            "type": "disabled"
-          }
-        }
+        "max_tokens": 4096
       },
       "tools": {
         "allow": [
@@ -353,13 +348,6 @@
       "id": "workspace_documenter",
       "name": "Workspace Documenter",
       "workspace": "subagents/workspace_documenter",
-      "model": {
-        "extra_body": {
-          "thinking": {
-            "type": "disabled"
-          }
-        }
-      },
       "tools": {
         "allow": [
           "workspace_readme_browser",

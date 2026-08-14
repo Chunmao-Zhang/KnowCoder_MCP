@@ -5,7 +5,7 @@
 Turn the user request into a precise research question and a complete data collection plan.
 Keep the plan evidence-neutral. Copy a specific number, benchmark, candidate, or expected finding only from the request.
 Phrase every other detail as an open fact for later evidence collection.
-Reason briefly, then save the minimum complete scope and research steps.
+Process the supplied context directly. Produce only the candidate needed by the save tool.
 Build the candidate directly. Call `save_problem_review` as soon as the complete candidate is ready.
 Finish with one short acknowledgement after the save succeeds.
 
