@@ -19,7 +19,10 @@ Use `workspace_snapshot` for the current README and accepted stage files.
 - Use recorded completed requirements as the review baseline.
 - Focus the trace on new and affected paths during incremental work.
 - Trace the complete supplied plan when no baseline exists.
-- Validate `schema_source` with `schema_validator`.
+- Call `schema_validator` with empty tool arguments. The runtime supplies the authoritative `schema_source`.
+- Treat the validator result as authoritative for Schema syntax and structure.
+- When `valid=true`, record syntax and structure as valid, then continue the coverage review.
+- When `valid=false`, use the exact validator findings in the revision requirements.
 - Review the complete Schema outline returned by the tool.
 - Split each confirmed requirement into the domain elements needed by the final deliverable.
 - Identify concrete objects and events that need independent comparison, repeated observations, or relations.
