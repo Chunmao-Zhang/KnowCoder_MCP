@@ -130,7 +130,7 @@ class DeepSeekChatOpenAI(ChatOpenAI):
         if isinstance(response, dict):
             choices = response.get("choices", []) or []
         elif hasattr(response, "choices"):
-            choices = getattr(response, "choices") or []
+            choices = response.choices or []
 
         for generation, choice in zip(result.generations, choices):
             reasoning = _reasoning_from_choice(choice)
@@ -171,6 +171,12 @@ class DeepSeekChatOpenAI(ChatOpenAI):
         **kwargs: Any,
     ) -> dict:
         payload = super()._get_request_payload(input_, stop=stop, **kwargs)
+
+        # Stage persistence can terminate an agent immediately after a successful
+        # save. Keep each model turn to one tool call so every emitted call always
+        # receives its matching ToolMessage before that termination boundary.
+        if payload.get("tools"):
+            payload["parallel_tool_calls"] = False
 
         for message in payload.get("messages", []):
             message["content"] = _flatten_text_blocks(message.get("content"))

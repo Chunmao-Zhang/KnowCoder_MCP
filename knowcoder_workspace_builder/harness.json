@@ -114,6 +114,9 @@
         },
         {
           "type": "knowcoder_workspace_builder.utils.agent_utils.message_validator.delegation.WorkspaceExtractionDelegationMiddleware"
+        },
+        {
+          "type": "knowcoder_workspace_builder.utils.agent_utils.message_validator.delegation.DelegationDoneStopMiddleware"
         }
       ]
     },

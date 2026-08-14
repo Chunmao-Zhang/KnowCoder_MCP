@@ -5,13 +5,20 @@ from __future__ import annotations
 import json
 from collections.abc import Callable
 
-from langchain.agents.middleware.types import AgentMiddleware, ToolCallRequest
-from langchain_core.messages import ToolMessage
+from langchain.agents.middleware.types import (
+    AgentMiddleware,
+    ModelRequest,
+    ModelResponse,
+    ToolCallRequest,
+)
+from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langgraph.types import Command
 
+from knowcoder_workspace_builder.runtime.invocation_context import (
+    active_delegation_payload,
+)
 from knowcoder_workspace_builder.validation.inputs import validate_stage_input
 from knowcoder_workspace_builder.validation.stage_results import STAGE_PROTOCOLS
-from knowcoder_workspace_builder.runtime.invocation_context import active_delegation_payload
 
 
 def _error(request: ToolCallRequest, message: str) -> ToolMessage:
@@ -25,7 +32,7 @@ def _error(request: ToolCallRequest, message: str) -> ToolMessage:
 def _task_payload(request: ToolCallRequest) -> tuple[str, dict[str, object]]:
     args = request.tool_call.get("args")
     if not isinstance(args, dict):
-        raise ValueError("task arguments must be an object")
+        raise TypeError("task arguments must be an object")
     subagent = str(args.get("subagent_type") or "").strip()
     if not subagent:
         raise ValueError("task subagent_type must be non-empty")
@@ -36,7 +43,7 @@ def _task_payload(request: ToolCallRequest) -> tuple[str, dict[str, object]]:
 def _bind_task_payload(request: ToolCallRequest, payload: dict[str, object]) -> ToolCallRequest:
     args = request.tool_call.get("args")
     if not isinstance(args, dict):
-        raise ValueError("task arguments must be an object")
+        raise TypeError("task arguments must be an object")
     # Coordination belongs to the parent Agent. Passing it to the delegated
     # specialist makes the specialist try to delegate its own assigned work.
     specialist_payload = {key: value for key, value in payload.items() if key != "coordination"}
@@ -105,3 +112,32 @@ class WorkspaceExtractionDelegationMiddleware(AgentMiddleware):
 
     async def awrap_tool_call(self, request: ToolCallRequest, handler: Callable) -> ToolMessage | Command:
         return self._check(request) or await handler(request)
+
+
+class DelegationDoneStopMiddleware(AgentMiddleware):
+    """Return control after the stage's single delegated specialist finishes."""
+
+    @staticmethod
+    def _delegation_finished(request: ModelRequest) -> bool:
+        messages = list(request.messages or [])
+        latest_human = -1
+        for index, message in enumerate(messages):
+            if isinstance(message, HumanMessage) or str(getattr(message, "type", "") or "") == "human":
+                latest_human = index
+        return any(
+            isinstance(message, ToolMessage) and str(message.name or "") == "task"
+            for message in messages[latest_human + 1 :]
+        )
+
+    def _stop(self, request: ModelRequest) -> ModelResponse | None:
+        if not self._delegation_finished(request):
+            return None
+        return ModelResponse(
+            result=[AIMessage(content="The delegated stage finished. Deterministic validation runs next.")]
+        )
+
+    def wrap_model_call(self, request: ModelRequest, handler: Callable) -> ModelResponse:
+        return self._stop(request) or handler(request)
+
+    async def awrap_model_call(self, request: ModelRequest, handler: Callable) -> ModelResponse:
+        return self._stop(request) or await handler(request)

@@ -29,6 +29,7 @@ Work on `uncovered_step_indexes` when they are present.
 11. Finish immediately after `save_evidence_manifest` returns `ok=true`.
 
 Keep assistant output empty while calling tools.
+Call exactly one tool per assistant turn. Batch queries or URLs inside that tool call.
 Make the next Search, Fetch, or Save call after the three thinking lines.
 
 ## File Contract
