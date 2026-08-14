@@ -20,13 +20,13 @@ Work on `uncovered_step_indexes` when they are present.
    Write these lines in `reasoning_content`.
 3. Put source names, URLs, comparisons, candidate inventories, and selection details in tool arguments.
 4. Call `web_search_batch` for all uncovered steps. Use complementary queries and prioritize primary sources.
-5. Submit promising URLs for one step together in one Fetch call. Wait for its result before another Fetch call.
+5. Complete one Fetch call for every uncovered step awaiting a current source. Group promising URLs by step.
 6. Select returned chunks that support a requested conclusion or establish the identity and scope of the subject.
 7. Use focused Search and alternate source routes for missing central conclusions.
 8. Prefer evidence that adds a fact, verifies an important claim, or fills a coverage gap.
 9. Mark a step `limited` when relevant evidence remains unavailable after focused Search and Fetch.
-10. Call `save_evidence_manifest` when every step is `covered`, `limited`, or `blocked`.
-11. Finish immediately after the Save tool returns `ok=true`.
+10. Save after every step has a status and the complete result contains at least one formal source.
+11. Finish immediately after `save_evidence_manifest` returns `ok=true`.
 
 Keep assistant output empty while calling tools.
 Make the next Search, Fetch, or Save call after the three thinking lines.

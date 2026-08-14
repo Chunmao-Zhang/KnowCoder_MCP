@@ -77,6 +77,8 @@ class EvidenceCompletionValidator(BaseValidator):
                 if not isinstance(source, dict) or not str(source.get("source_id") or "").strip():
                     raise ValueError("Every evidence source requires a source_id")
                 source_ids.append(str(source["source_id"]))
+            if not source_ids:
+                raise ValueError("Evidence completion requires at least one formal source")
             if len(source_ids) != len(set(source_ids)):
                 raise ValueError("Evidence source IDs must be unique")
             workspace_context = ctx.get("workspace_context")

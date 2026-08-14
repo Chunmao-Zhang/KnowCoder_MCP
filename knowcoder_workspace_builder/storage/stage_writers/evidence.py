@@ -41,11 +41,12 @@ class EvidenceWriter(BaseStageWriter):
                 selected_web_bindings=selected_bindings,
                 selected_web_records=formal_records,
             )
+            normalization_log = self.normalization_log(changes)
             register_prepared_fetch_sources(selected_records)
             target = self.persist("evidence_manifest", manifest)
             return {
                 "candidate_path": self.virtual(target),
-                "normalization_log": self.normalization_log(changes),
+                "normalization_log": normalization_log,
             }
 
         return self.execute(operation)
