@@ -111,6 +111,7 @@ Use the question and all steps as the scope. Use the chunk as the only evidence.
 - Include only definitions supported by relevant chunk content.
 - Cover the entity kinds, measurable properties, events, and connections needed for that content.
 - Define reusable types. Do not construct an entity type from an entity's specific name or factual value.
+- Exclude instance names and factual values.
 - Use attributes for scalar properties. Use entities for independently identified or repeated records.
 - Keep different identities or relation endpoints in different entity types.
 - Propose each definition once.

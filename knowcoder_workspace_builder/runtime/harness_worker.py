@@ -500,10 +500,11 @@ def _configure_validation_repair(
     tools = getattr(specialist, "tools", None)
     if tools is None:
         raise ValueError(f"Builder Subagent {specialist.id} is missing its tool configuration")
+    needs_stage_tools = stage == "evidence" and reason == "missing_artifact"
     allowed = (
-        [STAGE_PERSISTENCE_TOOLS[stage]]
-        if reason == "missing_artifact"
-        else list(VALIDATION_REPAIR_TOOLS[stage])
+        list(VALIDATION_REPAIR_TOOLS[stage])
+        if needs_stage_tools or reason != "missing_artifact"
+        else [STAGE_PERSISTENCE_TOOLS[stage]]
     )
     missing = sorted(set(allowed) - set(tools.allow))
     if missing:

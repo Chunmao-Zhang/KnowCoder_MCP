@@ -596,6 +596,25 @@ class EvidenceManifestPreflightMiddleware(AgentMiddleware):
                 return _tool_error(request, "invalid_evidence_manifest", f"{field} must be a list")
         if "selected_web_sources" in args and not isinstance(args.get("selected_web_sources"), list):
             return _tool_error(request, "invalid_evidence_manifest", "selected_web_sources must be a list")
+        coverage = args["coverage"]
+        unresolved_gaps = args["unresolved_gaps"]
+        if all(isinstance(item, dict) for item in coverage):
+            unresolved_steps = [
+                item.get("step_index")
+                for item in coverage
+                if item.get("status") in {"limited", "blocked"}
+            ]
+            if len(unresolved_gaps) != len(unresolved_steps):
+                return _tool_error(
+                    request,
+                    "invalid_evidence_manifest",
+                    (
+                        "unresolved_gaps must contain exactly one consolidated item for each coverage step "
+                        "marked limited or blocked. Steps marked covered have no unresolved gap. "
+                        f"Expected {len(unresolved_steps)} gap items for steps {unresolved_steps}; "
+                        f"received {len(unresolved_gaps)}."
+                    ),
+                )
         return None
 
     def wrap_tool_call(
@@ -632,8 +651,10 @@ class FailedToolCircuitBreakerMiddleware(AgentMiddleware):
         "Missing states what evidence still needs collection. "
         "Start each line with its label and keep all three lines within 300 characters total. "
         "Put source names, URLs, comparisons, and selection details in tool arguments. "
-        "Group URLs with the same evidence goal in one Fetch call. "
-        "Compatible Search or Fetch calls may run together. Review results before moving to the next tool phase. "
+        "Process confirmed steps in order and finish the current step before starting the next. "
+        "Group the current step's useful URLs in one Fetch call and let that call handle bounded page concurrency. "
+        "Review Search results before Fetch and Fetch results before moving to the next step. "
+        "Move on when fetched bodies support the current step's requested facts; record a limitation for inaccessible gaps. "
         "Then make the next Search, Fetch, or Save tool call immediately with empty assistant content."
     )
 
@@ -646,13 +667,13 @@ class FailedToolCircuitBreakerMiddleware(AgentMiddleware):
 
     """Allow limited external-search retries before opening the circuit.
 
-    Prompt policy: a failed search step may be retried with corrected input up to
-    three failed external attempts. Only after that many external_search_error
-    results do we block further web_search calls and force stage completion.
-    Invalid request errors never open the circuit.
+    Prompt policy: successful Search results reset the failure streak. Five
+    consecutive external failures open the circuit. Partial batch success also
+    resets the streak because its usable candidates remain available. Invalid
+    request errors never open the circuit.
     """
 
-    MAX_EXTERNAL_SEARCH_FAILURES = 3
+    MAX_EXTERNAL_SEARCH_FAILURES = 5
 
     def __init__(self, tool_names: list[str]) -> None:
         self.tool_names = set(tool_names)
@@ -662,19 +683,24 @@ class FailedToolCircuitBreakerMiddleware(AgentMiddleware):
         if payload.get("error_type") == "external_search_error":
             return True
         results = payload.get("results")
-        return isinstance(results, list) and any(
-            isinstance(item, dict) and item.get("error_type") == "external_search_error"
-            for item in results
+        if not isinstance(results, list):
+            return False
+        has_external_failure = any(
+            isinstance(item, dict) and item.get("error_type") == "external_search_error" for item in results
         )
+        has_success = any(isinstance(item, dict) and item.get("ok") is True for item in results)
+        return has_external_failure and not has_success
 
-    def _external_failure_count(self, messages: list[Any], tool_name: str) -> int:
+    def _consecutive_external_failure_count(self, messages: list[Any], tool_names: set[str]) -> int:
         count = 0
         for message in messages:
-            if not isinstance(message, ToolMessage) or message.name != tool_name:
+            if not isinstance(message, ToolMessage) or message.name not in tool_names:
                 continue
             payload = _json_payload(message)
             if payload and self._is_external_failure(payload):
                 count += 1
+            elif payload and payload.get("ok") is True:
+                count = 0
         return count
 
     def _check(self, request: ToolCallRequest) -> ToolMessage | None:
@@ -683,11 +709,8 @@ class FailedToolCircuitBreakerMiddleware(AgentMiddleware):
             return None
         messages = _state_messages(request.state)
         search_tools = self.tool_names.intersection({"web_search", "web_search_batch"})
-        failures = (
-            sum(self._external_failure_count(messages, tool_name) for tool_name in search_tools)
-            if name in search_tools
-            else self._external_failure_count(messages, name)
-        )
+        counted_tools = search_tools if name in search_tools else {name}
+        failures = self._consecutive_external_failure_count(messages, counted_tools)
         if failures < self.MAX_EXTERNAL_SEARCH_FAILURES:
             return None
         return _tool_error(
@@ -705,7 +728,7 @@ class FailedToolCircuitBreakerMiddleware(AgentMiddleware):
         if not search_tools:
             return 0, 0
         circuit_count = 0
-        external_failures = sum(self._external_failure_count(messages, name) for name in search_tools)
+        external_failures = self._consecutive_external_failure_count(messages, search_tools)
         for message in messages:
             if not isinstance(message, ToolMessage) or message.name not in search_tools:
                 continue

@@ -67,7 +67,7 @@ The runtime compiles the Python Schema from the complete semantic blueprint.
 ## Quality Standard
 
 - Cover the complete question with evidence-supported definitions.
-- Use candidates for initial definitions.
+- Use candidates as the only source of new definitions during initial builds.
 - Use the accepted current Schema and explicit revision requirements for review changes.
 - Use the complete question and confirmed steps as the coverage checklist.
 - Treat evidence distributed across candidates as valid support for one combined definition.
@@ -81,6 +81,7 @@ The runtime compiles the Python Schema from the complete semantic blueprint.
 
 - `build_schema_candidates` generates and mechanically merges candidates for an initial build.
   It stores complete Source and Chunk provenance in the returned `provenance_path` file.
+  Report its error and stop when it fails.
 - `save_schema` persists the optimized Schema patch and compiles the Python artifact.
 
 ## Examples

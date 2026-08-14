@@ -283,6 +283,8 @@ At Problem Review and Schema Review, the Agent should summarize the result and p
 
 During long-running stages, brief progress is reported when the active Subagent changes or an error occurs. When the Workspace is complete, the Agent reads its evidence and produces the final response.
 
+Evidence collection processes the confirmed research steps in order. Each step reviews Search candidates, Fetches promising pages with bounded internal concurrency, and records inaccessible gaps without discarding successful sources. Five consecutive external Search failures stop the stage; any successful Search resets that failure streak.
+
 ## Public tools
 
 | Tool | Purpose |

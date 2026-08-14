@@ -383,7 +383,10 @@ def normalize_evidence_candidate(
     )
     if len(gaps) != unresolved_step_count:
         raise ContractError(
-            "Evidence limitations must contain one consolidated item for each limited or blocked step",
+            (
+                "unresolved_gaps must contain exactly one consolidated item for each coverage step marked "
+                "limited or blocked. Steps marked covered have no unresolved gap"
+            ),
             expected=unresolved_step_count,
             actual=len(gaps),
         )

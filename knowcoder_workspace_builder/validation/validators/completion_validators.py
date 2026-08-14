@@ -148,7 +148,8 @@ class EvidenceCompletionValidator(BaseValidator):
             )
             if len(limitations) != unresolved_step_count:
                 raise ValueError(
-                    "Evidence limitations must contain one consolidated item for each limited or blocked step"
+                    "unresolved_gaps must contain exactly one consolidated item for each coverage step marked "
+                    "limited or blocked. Steps marked covered have no unresolved gap"
                 )
             limitations.extend(item for item in blocking if item not in limitations)
             return self.success(context={"limitations": limitations})
