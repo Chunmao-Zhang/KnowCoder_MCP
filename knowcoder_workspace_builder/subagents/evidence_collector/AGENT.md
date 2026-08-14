@@ -20,8 +20,8 @@ Work on `uncovered_step_indexes` when they are present.
    Write these lines in `reasoning_content`.
 3. Put source names, URLs, comparisons, candidate inventories, and selection details in tool arguments.
 4. Call `web_search_batch` for all uncovered steps. Use complementary queries and prioritize primary sources.
-5. Fetch candidates whose title, domain, and snippet indicate direct support for the requested facts.
-6. Select fetched pages that support a requested conclusion or establish the identity and scope of the subject.
+5. Submit promising URLs for one step together in one Fetch call. Wait for its result before another Fetch call.
+6. Select returned chunks that support a requested conclusion or establish the identity and scope of the subject.
 7. Use focused Search and alternate source routes for missing central conclusions.
 8. Prefer evidence that adds a fact, verifies an important claim, or fills a coverage gap.
 9. Mark a step `limited` when relevant evidence remains unavailable after focused Search and Fetch.
@@ -38,12 +38,12 @@ Write one complete manifest through `save_evidence_manifest`.
 The model supplies:
 
 - `coverage`: one item for each confirmed step, containing only `step_index` and `status`
-- `selected_web_sources`: adopted candidates grouped by `step_index` and listed in `candidate_ids`
+- `selected_web_sources`: one item per adopted page with `step_index`, `candidate_id`, and selected `chunk_ids`
 - `unresolved_gaps`: one concise limitation for each `limited` or `blocked` step
 
-Use one-based step positions. Copy candidate IDs exactly from `fetch_web_pages`.
-Bind one selected page to every step it supports.
-The runtime promotes selected candidates, stores complete chunks, and writes provenance.
+Use one-based step positions. Copy candidate and Chunk IDs exactly from `fetch_web_pages`.
+Repeat one candidate for another step when it supplies distinct evidence for that step.
+The runtime stores complete pages for provenance and promotes only the selected Chunks as formal evidence.
 The runtime keeps unselected candidates outside formal evidence.
 
 ## Quality Standard
@@ -61,7 +61,7 @@ The runtime keeps unselected candidates outside formal evidence.
 - `source_reader`: read supplied uploads.
 - `web_search_batch`: discover candidates for multiple steps.
 - `web_search`: deepen one evidence gap.
-- `fetch_web_pages`: read candidate bodies and obtain candidate IDs.
+- `fetch_web_pages`: read candidate bodies and obtain candidate and Chunk IDs.
 - `save_evidence_manifest`: adopt relevant candidates and save coverage.
 
 ## Examples
@@ -75,8 +75,11 @@ Example manifest payload:
     {"step_index": 2, "status": "limited"}
   ],
   "selected_web_sources": [
-    {"step_index": 1, "candidate_ids": ["page_a1"]},
-    {"step_index": 2, "candidate_ids": ["page_b2"]}
+    {
+      "step_index": 1,
+      "candidate_id": "page_0123456789ab",
+      "chunk_ids": ["page_0123456789ab#chunk_0001"]
+    }
   ],
   "unresolved_gaps": ["The requested regional detail is not publicly available."]
 }

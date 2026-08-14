@@ -24,6 +24,8 @@ from knowcoder_workspace_builder.runtime.retry_policy import (
 from knowcoder_workspace_builder.runtime.session_context import active_session_paths
 from knowcoder_workspace_builder.runtime.virtual_paths import virtual_path_for
 from knowcoder_workspace_builder.runtime.workspace_sources import register_source_record
+from knowcoder_workspace_builder.storage.locks import SessionLockStore
+from knowcoder_workspace_builder.storage.paths import ProjectLayout
 from knowcoder_workspace_builder.storage.tool_calls import FetchLedger
 from knowcoder_workspace_builder.storage.transaction import AtomicWriter
 
@@ -36,6 +38,8 @@ from .web_content import (
     chunk_markdown,
     crawl_html_documents_sync,
     fetch_document,
+    relevant_chunks,
+    relevant_excerpt,
     source_id_for_url,
 )
 
@@ -218,75 +222,123 @@ def _candidate_metadata(candidate_id: str) -> dict[str, Any]:
     return value
 
 
+def _candidate_summary(
+    metadata: dict[str, Any],
+    *,
+    query: str,
+    settings: WebFetchSettings,
+    cached: bool = False,
+) -> dict[str, Any]:
+    chunks = _read_json_lines(resolve_path(str(metadata["chunk_path"])))
+    ranked = relevant_chunks(query, chunks, top_k=settings.relevant_chunks_per_source)
+    return {
+        "candidate_id": str(metadata["candidate_id"]),
+        "url": str(metadata["url"]),
+        "title": str(metadata["title"]),
+        "character_count": int(metadata["character_count"]),
+        "chunk_count": int(metadata["chunk_count"]),
+        "relevant_chunks": [
+            {
+                "chunk_id": str(chunk["chunk_id"]),
+                "heading": str(chunk.get("heading") or ""),
+                "content_excerpt": relevant_excerpt(
+                    query,
+                    str(chunk.get("text") or ""),
+                    max_chars=settings.relevant_excerpt_chars,
+                ),
+            }
+            for chunk in ranked
+        ],
+        "cached": cached,
+    }
+
+
 def prepare_fetch_candidates(selections: list[dict[str, Any]]) -> tuple[dict[int, dict[str, list[Any]]], list[dict[str, Any]]]:
-    """Validate selected pages and prepare formal records without changing the source manifest."""
+    """Validate model-selected page chunks and prepare formal records."""
     if not isinstance(selections, list):
         raise ValueError("selected_web_sources must be a list")
     paths = active_session_paths()
     bindings: dict[int, dict[str, list[Any]]] = {}
     records: list[dict[str, Any]] = []
-    seen: set[tuple[int, str]] = set()
+    records_by_source: dict[str, dict[str, Any]] = {}
+    seen: set[tuple[int, str, str]] = set()
     for position, selection in enumerate(selections, start=1):
         if not isinstance(selection, dict):
             raise ValueError(f"selected_web_sources item {position} must be an object")
         step_index = selection.get("step_index")
-        candidate_ids = selection.get("candidate_ids")
+        candidate_id = str(selection.get("candidate_id") or "").strip()
+        chunk_ids = selection.get("chunk_ids")
         if not isinstance(step_index, int) or isinstance(step_index, bool):
             raise ValueError(f"selected_web_sources item {position} requires an integer step_index")
-        if not isinstance(candidate_ids, list) or any(not str(item).strip() for item in candidate_ids):
-            raise ValueError(f"selected_web_sources item {position} requires candidate_ids")
-        for raw_candidate_id in candidate_ids:
-            candidate_id = str(raw_candidate_id).strip()
-            selection_key = (step_index, candidate_id)
+        if not candidate_id:
+            raise ValueError(f"selected_web_sources item {position} requires candidate_id")
+        if not isinstance(chunk_ids, list) or not chunk_ids or any(not str(item).strip() for item in chunk_ids):
+            raise ValueError(f"selected_web_sources item {position} requires non-empty chunk_ids")
+        normalized_chunk_ids = list(dict.fromkeys(str(item).strip() for item in chunk_ids))
+        metadata = _candidate_metadata(candidate_id)
+        content_path = resolve_path(str(metadata["content_path"]))
+        chunk_path = resolve_path(str(metadata["chunk_path"]))
+        raw_path = resolve_path(str(metadata["raw_path"]))
+        available_chunks = {str(chunk["chunk_id"]): chunk for chunk in _read_json_lines(chunk_path)}
+        missing_chunk_ids = [chunk_id for chunk_id in normalized_chunk_ids if chunk_id not in available_chunks]
+        if missing_chunk_ids:
+            raise ValueError(
+                f"selected_web_sources item {position} references unknown chunks for {candidate_id}: "
+                + ", ".join(missing_chunk_ids)
+            )
+        source_id = str(metadata["source_id"])
+        final_directory = paths.sources / "web_crawls" / source_id
+        final_content_path = final_directory / "content.md"
+        final_chunk_path = final_directory / "chunks.jsonl"
+        final_raw_path = final_directory / raw_path.name
+        record = records_by_source.get(source_id)
+        if record is None:
+            record = {
+                "source_id": source_id,
+                "category": "web_crawls",
+                "source_kind": "web_crawl",
+                "evidence_group": "web",
+                "file_path": virtual_path_for(paths.root, final_content_path),
+                "raw_path": virtual_path_for(paths.root, final_raw_path),
+                "chunk_path": virtual_path_for(paths.root, final_chunk_path),
+                "file_type": "md",
+                "url": str(metadata.get("url") or ""),
+                "requested_url": str(metadata.get("requested_url") or ""),
+                "title": str(metadata.get("title") or ""),
+                "content_type": str(metadata.get("content_type") or ""),
+                "content_sha256": str(metadata.get("content_sha256") or ""),
+                "content_format_version": WEB_CONTENT_FORMAT_VERSION,
+                "chunk_count": 0,
+                "size_bytes": content_path.stat().st_size,
+                "_candidate_content_path": str(content_path),
+                "_candidate_chunk_path": str(chunk_path),
+                "_candidate_raw_path": str(raw_path),
+                "_candidate_id": candidate_id,
+                "_candidate_selected_chunk_ids": [],
+            }
+            records_by_source[source_id] = record
+            records.append(record)
+        binding = bindings.setdefault(step_index, {"source_ids": [], "chunk_refs": []})
+        if source_id not in binding["source_ids"]:
+            binding["source_ids"].append(source_id)
+        selected_for_source = record["_candidate_selected_chunk_ids"]
+        for chunk_id in normalized_chunk_ids:
+            selection_key = (step_index, candidate_id, chunk_id)
             if selection_key in seen:
                 raise ValueError(
-                    f"Fetched webpage candidate was repeated for research step {step_index}: {candidate_id}"
+                    f"Fetched webpage chunk was repeated for research step {step_index}: {chunk_id}"
                 )
-            metadata = _candidate_metadata(candidate_id)
-            content_path = resolve_path(str(metadata["content_path"]))
-            chunk_path = resolve_path(str(metadata["chunk_path"]))
-            raw_path = resolve_path(str(metadata["raw_path"]))
-            source_id = str(metadata["source_id"])
-            final_directory = paths.sources / "web_crawls" / source_id
-            final_content_path = final_directory / "content.md"
-            final_chunk_path = final_directory / "chunks.jsonl"
-            final_raw_path = final_directory / raw_path.name
-            record = {
-                    "source_id": source_id,
-                    "category": "web_crawls",
-                    "source_kind": "web_crawl",
-                    "evidence_group": "web",
-                    "file_path": virtual_path_for(paths.root, final_content_path),
-                    "raw_path": virtual_path_for(paths.root, final_raw_path),
-                    "chunk_path": virtual_path_for(paths.root, final_chunk_path),
-                    "file_type": "md",
-                    "url": str(metadata.get("url") or ""),
-                    "requested_url": str(metadata.get("requested_url") or ""),
-                    "title": str(metadata.get("title") or ""),
-                    "content_type": str(metadata.get("content_type") or ""),
-                    "content_sha256": str(metadata.get("content_sha256") or ""),
-                    "content_format_version": WEB_CONTENT_FORMAT_VERSION,
-                    "chunk_count": int(metadata.get("chunk_count") or 0),
-                    "size_bytes": content_path.stat().st_size,
-                    "_candidate_content_path": str(content_path),
-                    "_candidate_chunk_path": str(chunk_path),
-                    "_candidate_raw_path": str(raw_path),
-                    "_candidate_id": candidate_id,
-                }
-            if not any(str(item.get("source_id") or "") == source_id for item in records):
-                records.append(record)
-            chunks = _read_json_lines(chunk_path)
-            binding = bindings.setdefault(step_index, {"source_ids": [], "chunk_refs": []})
-            if record["source_id"] not in binding["source_ids"]:
-                binding["source_ids"].append(record["source_id"])
-            binding["chunk_refs"].extend(
+            if chunk_id not in selected_for_source:
+                selected_for_source.append(chunk_id)
+            binding["chunk_refs"].append(
                 {
-                    "source_id": record["source_id"],
-                    "chunk_id": str(chunk["chunk_id"]).replace(candidate_id, str(record["source_id"]), 1),
+                    "source_id": source_id,
+                    "chunk_id": chunk_id.replace(candidate_id, source_id, 1),
                 }
-                for chunk in chunks
             )
             seen.add(selection_key)
+    for record in records:
+        record["chunk_count"] = len(record["_candidate_selected_chunk_ids"])
     return bindings, records
 
 
@@ -301,7 +353,12 @@ def register_prepared_fetch_sources(records: list[dict[str, Any]]) -> list[dict[
         content_path = Path(str(prepared["_candidate_content_path"]))
         chunk_path = Path(str(prepared["_candidate_chunk_path"]))
         raw_path = Path(str(prepared["_candidate_raw_path"]))
-        chunks = _read_json_lines(chunk_path)
+        selected_chunk_ids = set(prepared["_candidate_selected_chunk_ids"])
+        chunks = [
+            chunk
+            for chunk in _read_json_lines(chunk_path)
+            if str(chunk.get("chunk_id") or "") in selected_chunk_ids
+        ]
         normalized_chunks = [
             {
                 **chunk,
@@ -359,16 +416,7 @@ def fetch_candidate_pages(
         if document is None:
             continue
         metadata = _persist_candidate(document, active_settings, step_index=step_index, query=query)
-        candidates.append(
-            {
-                "candidate_id": metadata["candidate_id"],
-                "url": metadata["url"],
-                "title": metadata["title"],
-                "character_count": metadata["character_count"],
-                "chunk_count": metadata["chunk_count"],
-                "content_markdown": document.markdown,
-            }
-        )
+        candidates.append(_candidate_summary(metadata, query=query, settings=active_settings))
     return {
         "ok": bool(candidates),
         "status": "completed" if len(candidates) == len(normalized_urls) else "partial" if candidates else "failed",
@@ -377,15 +425,84 @@ def fetch_candidate_pages(
         "requested": len(normalized_urls),
         "completed": len(candidates),
         "instruction": (
-            "Judge each candidate against the complete question and current step. "
-            "Select relevant candidate_ids in save_evidence_manifest and exclude unrelated candidates."
+            "Judge the returned relevant chunks against the complete question and current step. "
+            "Save each adopted page with its candidate_id and selected chunk_ids."
+        ),
+    }
+
+
+def _prior_url_outcomes(ledger: FetchLedger) -> dict[str, dict[str, Any]]:
+    outcomes: dict[str, dict[str, Any]] = {}
+    for record in ledger.records():
+        response = record.get("response")
+        if not isinstance(response, dict):
+            continue
+        for failure in response.get("failures") or []:
+            if not isinstance(failure, dict):
+                continue
+            url = str(failure.get("url") or "").strip()
+            error = str(failure.get("error") or "").strip()
+            if url and error:
+                outcomes[canonical_url(url)] = {"status": "failed", "error": error}
+        for candidate in response.get("candidates") or []:
+            if not isinstance(candidate, dict):
+                continue
+            url = str(candidate.get("url") or "").strip()
+            candidate_id = str(candidate.get("candidate_id") or "").strip()
+            if url and candidate_id:
+                outcomes[canonical_url(url)] = {"status": "completed", "candidate_id": candidate_id}
+    return outcomes
+
+
+def _fetch_with_attempt_cache(
+    urls: list[str],
+    *,
+    step_index: int,
+    query: str,
+    settings: WebFetchSettings,
+    ledger: FetchLedger,
+) -> dict[str, Any]:
+    normalized_urls = list(dict.fromkeys(canonical_url(value) for value in urls))
+    outcomes = _prior_url_outcomes(ledger)
+    pending_urls: list[str] = []
+    candidates: list[dict[str, Any]] = []
+    failures: list[dict[str, Any]] = []
+    for url in normalized_urls:
+        outcome = outcomes.get(url)
+        if outcome is None:
+            pending_urls.append(url)
+        elif outcome["status"] == "completed":
+            metadata = _candidate_metadata(str(outcome["candidate_id"]))
+            candidates.append(_candidate_summary(metadata, query=query, settings=settings, cached=True))
+        else:
+            failures.append({"url": url, "error": str(outcome["error"]), "cached": True})
+    if pending_urls:
+        fetched = fetch_candidate_pages(
+            pending_urls,
+            step_index=step_index,
+            query=query,
+            settings=settings,
+        )
+        candidates.extend(list(fetched.get("candidates") or []))
+        failures.extend(list(fetched.get("failures") or []))
+    completed = len(candidates)
+    return {
+        "ok": completed > 0,
+        "status": "completed" if completed == len(normalized_urls) else "partial" if completed else "failed",
+        "candidates": candidates,
+        "failures": failures,
+        "requested": len(normalized_urls),
+        "completed": completed,
+        "instruction": (
+            "Judge the returned relevant chunks against the complete question and current step. "
+            "Save each adopted page with its candidate_id and selected chunk_ids."
         ),
     }
 
 
 @tool
 def fetch_web_pages(urls: list[str], step_index: int, purpose: str) -> str:
-    """Fetch complete content for explicit webpage URLs and bind it to one research step."""
+    """Fetch webpage candidates and return compact, question-relevant chunks for review."""
     try:
         context = active_invocation_context()
         if context.stage != "evidence":
@@ -399,16 +516,27 @@ def fetch_web_pages(urls: list[str], step_index: int, purpose: str) -> str:
         if not normalized_purpose:
             raise ValueError("purpose must be non-empty text")
         query = f"{steps[step_index - 1]} {normalized_purpose}"
-        result = fetch_candidate_pages(urls, step_index=step_index, query=query)
-        FetchLedger(active_session_paths(), context.attempt_id).append(
-            {
-                "step_index": step_index,
-                "purpose": normalized_purpose,
-                "urls": [canonical_url(value) for value in urls],
-                "status": str(result.get("status") or "failed"),
-                "response": result,
-            }
-        )
+        paths = active_session_paths()
+        settings = load_web_fetch_settings()
+        ledger = FetchLedger(paths, context.attempt_id)
+        locks = SessionLockStore(ProjectLayout(paths.project))
+        with locks.acquire_scope(paths.session_id, "web_fetch"):
+            result = _fetch_with_attempt_cache(
+                urls,
+                step_index=step_index,
+                query=query,
+                settings=settings,
+                ledger=ledger,
+            )
+            ledger.append(
+                {
+                    "step_index": step_index,
+                    "purpose": normalized_purpose,
+                    "urls": [canonical_url(value) for value in urls],
+                    "status": str(result.get("status") or "failed"),
+                    "response": result,
+                }
+            )
         if not result.get("ok"):
             result["error_type"] = "web_fetch_error"
             result["message"] = "No requested webpage produced usable complete content."

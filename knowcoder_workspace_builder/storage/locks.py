@@ -95,7 +95,23 @@ class SessionLockStore:
     @contextmanager
     def acquire(self, session_id: str) -> Iterator[None]:
         session_id = validate_session_id(session_id)
-        lock_path = self.layout.service_path("locks", f"{session_id}.lock", create_parent=True)
+        with self._acquire_path(f"{session_id}.lock"):
+            yield
+
+    @contextmanager
+    def acquire_scope(self, session_id: str, scope: str) -> Iterator[None]:
+        session_id = validate_session_id(session_id)
+        normalized_scope = str(scope or "").strip().casefold()
+        if not normalized_scope or any(
+            char not in "abcdefghijklmnopqrstuvwxyz0123456789_-" for char in normalized_scope
+        ):
+            raise ValueError("Session lock scope must use lowercase letters, digits, underscores, or hyphens")
+        with self._acquire_path(f"{session_id}-{normalized_scope}.lock"):
+            yield
+
+    @contextmanager
+    def _acquire_path(self, filename: str) -> Iterator[None]:
+        lock_path = self.layout.service_path("locks", filename, create_parent=True)
         key = str(lock_path)
         with _thread_lock(key):
             held = _held_locks()

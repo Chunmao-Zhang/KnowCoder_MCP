@@ -229,7 +229,7 @@ class StageCompletionContractMiddleware(AgentMiddleware):
         if stage == "evidence" and not self._has_successful_search(messages):
             action = (
                 "Call web_search_batch now for the uncovered research steps. "
-                "Fetch promising links, select only relevant candidate IDs, and call save_evidence_manifest."
+                "Fetch promising links, select relevant candidate and Chunk IDs, and call save_evidence_manifest."
             )
         elif stage == "schema_build" and not self._successful(messages, "build_schema_candidates"):
             action = (
@@ -521,7 +521,7 @@ class EvidenceManifestPreflightMiddleware(AgentMiddleware):
                             "sources": [],
                             "message": (
                                 "No uploads were supplied. Discover candidates with Search, review complete bodies with Fetch, "
-                                "then select relevant candidate IDs in save_evidence_manifest."
+                                "then select relevant candidate and Chunk IDs in save_evidence_manifest."
                             ),
                         },
                         ensure_ascii=False,
@@ -575,6 +575,7 @@ class FailedToolCircuitBreakerMiddleware(AgentMiddleware):
         "Missing states what evidence still needs collection. "
         "Start each line with its label and keep all three lines within 300 characters total. "
         "Put source names, URLs, comparisons, and selection details in tool arguments. "
+        "Group promising URLs for one step in one Fetch call and wait for its result before another Fetch call. "
         "Then make the next Search, Fetch, or Save tool call immediately with empty assistant content."
     )
 
@@ -700,7 +701,7 @@ class FailedToolCircuitBreakerMiddleware(AgentMiddleware):
                 request,
                 "Every uncovered step has first-pass Search candidates. "
                 "Fetch promising links and keep only pages whose body directly supports the step. "
-                "Run focused Search and Fetch calls for material gaps, then save selected candidate IDs.",
+                "Run focused Search and Fetch calls for material gaps, then save selected candidate and Chunk IDs.",
             )
         closed = [index for index in indexes if completed_by_step[index] >= 1]
         remaining_focus = [index for index in indexes if completed_by_step[index] < 1]
