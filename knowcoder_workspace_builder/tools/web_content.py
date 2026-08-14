@@ -154,6 +154,49 @@ def _crawl_document(requested_url: str, result: Any, settings: WebFetchSettings)
     )
 
 
+def _index_crawl_results(
+    requested_urls: list[str],
+    results: list[Any],
+) -> tuple[dict[str, Any], list[dict[str, str]]]:
+    """Associate unordered Crawl4AI batch results with their requested URLs."""
+    requested = set(requested_urls)
+    indexed: dict[str, Any] = {}
+    failures: list[dict[str, str]] = []
+    for result in results:
+        raw_result_url = str(_result_value(result, "url", "") or "").strip()
+        if not raw_result_url:
+            failures.append(
+                {
+                    "url": "<unknown>",
+                    "error": "Crawl4AI returned a result without its requested URL",
+                }
+            )
+            continue
+        try:
+            result_url = canonical_url(raw_result_url)
+        except (TypeError, ValueError) as exc:
+            failures.append({"url": raw_result_url, "error": f"Crawl4AI returned an invalid result URL: {exc}"})
+            continue
+        if result_url not in requested:
+            failures.append(
+                {
+                    "url": result_url,
+                    "error": "Crawl4AI returned a result for a URL outside the requested batch",
+                }
+            )
+            continue
+        if result_url in indexed:
+            failures.append(
+                {
+                    "url": result_url,
+                    "error": "Crawl4AI returned more than one result for this URL",
+                }
+            )
+            continue
+        indexed[result_url] = result
+    return indexed, failures
+
+
 async def crawl_html_documents(
     urls: list[str],
     settings: WebFetchSettings,
@@ -190,9 +233,10 @@ async def crawl_html_documents(
                 max_session_permit=min(settings.max_concurrency, len(requested_urls)),
             ),
         )
-    result_items = list(results)
-    for index, requested_url in enumerate(requested_urls):
-        result = result_items[index] if index < len(result_items) else None
+    results_by_url, association_failures = _index_crawl_results(requested_urls, list(results))
+    failures.extend(association_failures)
+    for requested_url in requested_urls:
+        result = results_by_url.get(requested_url)
         if result is None:
             failures.append({"url": requested_url, "error": "Crawl4AI returned no result for this URL"})
             continue
