@@ -7,7 +7,10 @@ import json
 from datetime import UTC, datetime
 from typing import Any
 
-from knowcoder_workspace_builder.contracts.errors import ContractError, StateConflictError
+from knowcoder_workspace_builder.contracts.errors import (
+    ContractError,
+    StateConflictError,
+)
 
 from .locks import SessionLockStore
 from .paths import ProjectLayout, SessionPaths
@@ -83,7 +86,7 @@ class ToolCallLedger:
             AtomicWriter(self.paths).json(self.path, {"calls": records})
         return signature
 
-    def finish(self, signature: str, status: str) -> None:
+    def finish(self, signature: str, status: str, *, error: str = "") -> None:
         if status not in {"completed", "failed"}:
             raise ValueError("Tool call terminal status is invalid")
         with self.locks.acquire(self.paths.session_id):
@@ -100,6 +103,8 @@ class ToolCallLedger:
                 raise StateConflictError("Tool call ledger record is missing", signature=signature)
             record["status"] = status
             record["finished_at"] = datetime.now(UTC).isoformat()
+            if error:
+                record["error"] = error
             AtomicWriter(self.paths).json(self.path, {"calls": records})
 
 

@@ -43,6 +43,8 @@ The model supplies:
 - `unresolved_gaps`: one concise limitation for each `limited` or `blocked` step
 
 Use one-based step positions. Copy candidate and Chunk IDs exactly from `fetch_web_pages`.
+Bind at least one selected source to the same `step_index` for every `covered` item.
+Use `limited` with one unresolved gap when a step has no selected source.
 Repeat one candidate for another step when it supplies distinct evidence for that step.
 The runtime stores complete pages for provenance and promotes only the selected Chunks as formal evidence.
 The runtime keeps unselected candidates outside formal evidence.

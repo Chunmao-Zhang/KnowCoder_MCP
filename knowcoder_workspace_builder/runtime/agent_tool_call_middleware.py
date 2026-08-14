@@ -510,6 +510,15 @@ class RunAttemptGuardMiddleware(AgentMiddleware):
                     return "failed"
         return "completed"
 
+    @staticmethod
+    def _failure_detail(value: ToolMessage | Command) -> str:
+        if not isinstance(value, ToolMessage):
+            return ""
+        payload = _json_payload(value)
+        if payload is None:
+            return str(value.content or "") if value.status == "error" else ""
+        return str(payload.get("error") or payload.get("error_type") or "")
+
     def wrap_tool_call(
         self,
         request: ToolCallRequest,
@@ -521,10 +530,11 @@ class RunAttemptGuardMiddleware(AgentMiddleware):
         assert ledger is not None
         try:
             result = handler(request)
-        except BaseException:
-            ledger.finish(signature, "failed")
+        except BaseException as exc:
+            ledger.finish(signature, "failed", error=f"{type(exc).__name__}: {exc}")
             raise
-        ledger.finish(signature, self._status(result))
+        status = self._status(result)
+        ledger.finish(signature, status, error=self._failure_detail(result) if status == "failed" else "")
         return result
 
     async def awrap_tool_call(self, request: ToolCallRequest, handler: Callable) -> ToolMessage | Command:
@@ -534,10 +544,11 @@ class RunAttemptGuardMiddleware(AgentMiddleware):
         assert ledger is not None
         try:
             result = await handler(request)
-        except BaseException:
-            ledger.finish(signature, "failed")
+        except BaseException as exc:
+            ledger.finish(signature, "failed", error=f"{type(exc).__name__}: {exc}")
             raise
-        ledger.finish(signature, self._status(result))
+        status = self._status(result)
+        ledger.finish(signature, status, error=self._failure_detail(result) if status == "failed" else "")
         return result
 
 
