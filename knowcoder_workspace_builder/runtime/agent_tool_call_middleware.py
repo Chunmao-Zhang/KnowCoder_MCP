@@ -258,6 +258,21 @@ class StageCompletionContractMiddleware(AgentMiddleware):
             if isinstance(message, SystemMessage)
         )
 
+    @classmethod
+    def _correction_limit(cls, stage: str) -> int:
+        if stage != "evidence":
+            return cls.MAX_CORRECTIONS
+        try:
+            steps = active_invocation_context().input.get("steps")
+        except BuilderError:
+            return cls.MAX_CORRECTIONS
+        step_count = len(steps) if isinstance(steps, list) else 0
+        # Some compatible models naturally end a model turn after assessing one
+        # confirmed step.  Give each validated step one continuation opportunity
+        # plus one final persistence opportunity instead of assuming two model
+        # continuations are enough for every research scope.
+        return max(cls.MAX_CORRECTIONS, step_count + 1)
+
     @staticmethod
     def _evidence_circuit_open(messages: list[Any]) -> bool:
         for message in messages:
@@ -316,7 +331,7 @@ class StageCompletionContractMiddleware(AgentMiddleware):
             return None
         if stage == "evidence" and self._evidence_circuit_open(messages):
             return None
-        if self._correction_count(messages) >= self.MAX_CORRECTIONS:
+        if self._correction_count(messages) >= self._correction_limit(stage):
             return None
         return {
             "messages": [SystemMessage(content=self._instruction(stage, messages, tool_name))],
@@ -654,7 +669,7 @@ class EvidenceManifestPreflightMiddleware(AgentMiddleware):
 
 class FailedToolCircuitBreakerMiddleware(AgentMiddleware):
     _EVIDENCE_REASONING_GUIDE = (
-        "Keep private reasoning_content to exactly three short one-sentence lines: "
+        "Keep private planning to exactly three short one-sentence lines: "
         "Need states what the research must establish; Searched states what completed searches established; "
         "Missing states what evidence still needs collection. "
         "Start each line with its label and keep all three lines within 300 characters total. "
@@ -664,7 +679,8 @@ class FailedToolCircuitBreakerMiddleware(AgentMiddleware):
         "Group the current step's useful URLs in one Fetch call and let that call handle bounded page concurrency. "
         "Review Search results before Fetch and Fetch results before moving to the next step. "
         "Move on when fetched bodies support the current step's requested facts; record a limitation for inaccessible gaps. "
-        "Then make the next Search, Fetch, or Save tool call immediately with empty assistant content."
+        "Then make the next Search, Fetch, or Save tool call immediately with empty assistant content. "
+        "When no private reasoning channel is available, call the tool directly."
     )
 
     @classmethod

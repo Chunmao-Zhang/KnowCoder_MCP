@@ -15,7 +15,7 @@ Focus on `uncovered_step_indexes` when present.
 
 1. Read accepted Workspace material and supplied uploads once.
 2. Keep every private thinking turn to exactly three short lines and 300 characters in total.
-3. Write these lines in `reasoning_content` with `Need:`, `Searched:`, and `Missing:` labels.
+3. Use `Need:`, `Searched:`, and `Missing:` labels when the selected model exposes private reasoning.
    `Need:` what the research must establish.
    `Searched:` what completed searches established.
    `Missing:` what evidence still needs collection.
@@ -36,6 +36,7 @@ Focus on `uncovered_step_indexes` when present.
     Finish after it returns `ok=true`.
 
 Keep assistant output empty while calling tools.
+Use only the private reasoning channels supported by the selected model.
 
 ## File Contract
 
