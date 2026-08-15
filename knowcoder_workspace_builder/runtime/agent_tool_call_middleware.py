@@ -277,22 +277,13 @@ class StageCompletionContractMiddleware(AgentMiddleware):
                 return True
         return False
 
-    @staticmethod
-    def _has_successful_search(messages: list[Any]) -> bool:
-        return any(
-            isinstance(message, ToolMessage)
-            and str(message.name or "") in {"web_search", "web_search_batch"}
-            and (payload := _json_payload(message)) is not None
-            and payload.get("ok") is True
-            for message in messages
-        )
-
     def _instruction(self, stage: str, messages: list[Any], tool_name: str) -> str:
-        if stage == "evidence" and not self._has_successful_search(messages):
+        if stage == "evidence":
             action = (
-                "Use Search to discover evidence for the material gaps. "
-                "Fetch promising links when their body is needed, select relevant candidate and Chunk IDs, "
-                "then call save_evidence_manifest in a separate turn."
+                "Resume from the next confirmed step that has not been assessed. "
+                "Use Search to discover evidence and Fetch promising page bodies when they are needed for judgment. "
+                "Continue until every confirmed step is assessed as covered, limited, or blocked. "
+                "Then select relevant candidate and Chunk IDs and call save_evidence_manifest in a separate turn."
             )
         elif stage == "schema_build" and not self._successful(messages, "build_schema_candidates"):
             action = (
