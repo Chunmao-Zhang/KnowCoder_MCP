@@ -827,6 +827,13 @@ class FailedToolCircuitBreakerMiddleware(AgentMiddleware):
                 "has been reviewed for those steps. Treat snippets as discovery hints. Fetch promising candidates "
                 "for the current step before deciding its coverage or saving the manifest.",
             )
+        if indexes and all(fetched_by_step[index] >= 1 for index in indexes):
+            return self._with_evidence_guide(
+                request,
+                "Fetched page bodies are available for every confirmed step. "
+                "Assess each step as covered, limited, or blocked, select the relevant candidate and Chunk IDs, "
+                "and call save_evidence_manifest now in this model turn.",
+            )
         if indexes and all(completed_by_step[index] >= 1 for index in indexes):
             return self._with_evidence_guide(
                 request,
