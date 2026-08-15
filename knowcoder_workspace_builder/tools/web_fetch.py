@@ -14,6 +14,7 @@ from urllib.parse import urlsplit
 import httpx
 from langchain_core.tools import tool
 
+from knowcoder_workspace_builder.runtime.credentials import service_api_key
 from knowcoder_workspace_builder.runtime.invocation_context import (
     active_invocation_context,
 )
@@ -40,6 +41,7 @@ from .web_content import (
     fetch_document,
     relevant_chunks,
     relevant_excerpt,
+    serper_scrape_document,
     source_id_for_url,
 )
 
@@ -123,6 +125,10 @@ def load_web_fetch_settings() -> WebFetchSettings:
         user_agent=str(configured("user_agent", "SCHEMA_WEB_FETCH_USER_AGENT") or WebFetchSettings.user_agent),
         browser_channel=str(
             configured("browser_channel", "SCHEMA_WEB_FETCH_BROWSER_CHANNEL") or WebFetchSettings.browser_channel
+        ),
+        html_provider=str(configured("html_provider", "SCHEMA_WEB_FETCH_PROVIDER") or WebFetchSettings.html_provider),
+        serper_scrape_url=str(
+            configured("serper_scrape_url", "SCHEMA_SERPER_SCRAPE_URL") or WebFetchSettings.serper_scrape_url
         ),
     )
 
@@ -396,7 +402,10 @@ def fetch_candidate_pages(
     lightweight_urls = [url for url in normalized_urls if urlsplit(url).path.casefold().endswith((".pdf", ".txt"))]
     html_urls = [url for url in normalized_urls if url not in lightweight_urls]
     documents: dict[str, FetchedDocument] = {}
-    if html_urls:
+    provider = active_settings.html_provider.strip().casefold()
+    if provider not in {"serper", "crawl4ai"}:
+        raise ValueError("Web fetch html_provider must be 'serper' or 'crawl4ai'")
+    if html_urls and provider == "crawl4ai":
         crawled, crawl_failures = crawl_html_documents_sync(html_urls, active_settings)
         documents.update(crawled)
         failures.extend(
@@ -408,6 +417,38 @@ def fetch_candidate_pages(
             }
             for failure in crawl_failures
         )
+    if html_urls and provider == "serper":
+        api_key = service_api_key("SERPER_API_KEY")
+        if not api_key:
+            raise ValueError("SERPER_API_KEY is required for the Serper web fetch provider")
+        with ThreadPoolExecutor(max_workers=min(active_settings.max_concurrency, len(html_urls))) as pool:
+            futures = {
+                pool.submit(
+                    call_with_retries,
+                    lambda candidate_url=url: serper_scrape_document(
+                        candidate_url,
+                        active_settings,
+                        api_key=api_key,
+                    ),
+                    is_retryable=_is_retryable_web_fetch_error,
+                    max_retries=WEB_FETCH_MAX_RETRIES,
+                ): url
+                for url in html_urls
+            }
+            for future in as_completed(futures):
+                url = futures[future]
+                try:
+                    documents[url] = future.result()
+                except Exception as exc:  # noqa: BLE001 - every failed candidate is reported explicitly.
+                    failures.append(
+                        {
+                            "url": url,
+                            "requested_url": url,
+                            "fetch_method": "serper_scrape",
+                            "status": "failed",
+                            "error": str(exc),
+                        }
+                    )
     with ThreadPoolExecutor(max_workers=min(active_settings.max_concurrency, len(lightweight_urls) or 1)) as pool:
         futures = {
             pool.submit(

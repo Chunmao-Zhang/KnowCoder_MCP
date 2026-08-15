@@ -59,6 +59,8 @@ class WebFetchSettings:
     max_concurrency: int = 4
     user_agent: str = "SchemaWorkspaceBuilder/0.1 (+research evidence fetcher)"
     browser_channel: str = "chromium"
+    html_provider: str = "crawl4ai"
+    serper_scrape_url: str = "https://scrape.serper.dev"
 
 
 @dataclass(frozen=True)
@@ -253,6 +255,51 @@ def crawl_html_documents_sync(
     urls: list[str], settings: WebFetchSettings
 ) -> tuple[dict[str, FetchedDocument], list[dict[str, str]]]:
     return asyncio.run(crawl_html_documents(urls, settings))
+
+
+def serper_scrape_document(
+    url: str,
+    settings: WebFetchSettings,
+    *,
+    api_key: str,
+) -> FetchedDocument:
+    """Fetch one public webpage through Serper's hosted Markdown scraper."""
+    requested_url = canonical_url(url)
+    _require_public_host(requested_url)
+    if not str(api_key or "").strip():
+        raise ValueError("SERPER_API_KEY is required for the Serper web fetch provider")
+    response = httpx.post(
+        settings.serper_scrape_url,
+        json={"url": requested_url, "includeMarkdown": True},
+        headers={"X-API-KEY": api_key, "Content-Type": "application/json"},
+        timeout=settings.timeout_seconds,
+    )
+    response.raise_for_status()
+    if len(response.content) > settings.max_response_bytes:
+        raise ValueError(f"Webpage response exceeds the configured {settings.max_response_bytes} byte limit")
+    payload = response.json()
+    if not isinstance(payload, dict):
+        raise ValueError("Serper Scrape returned a non-object response")
+    markdown = str(payload.get("markdown") or payload.get("text") or "").strip()
+    metadata = payload.get("metadata")
+    title_value = metadata.get("title", "") if isinstance(metadata, dict) else ""
+    fallback_title = urlsplit(requested_url).path.rsplit("/", 1)[-1] or urlsplit(requested_url).hostname or "Web source"
+    title = " ".join(str(title_value or fallback_title).split())
+    if markdown and not markdown.lstrip().startswith("#"):
+        markdown = f"# {title}\n\n{markdown}"
+    visible_chars = len(re.sub(r"\s+", "", markdown))
+    if visible_chars < settings.min_content_chars:
+        raise ValueError(f"Extracted webpage content is too short ({visible_chars} characters) to use as evidence")
+    return FetchedDocument(
+        requested_url=requested_url,
+        final_url=requested_url,
+        title=title,
+        content_type="application/json",
+        raw_bytes=response.content,
+        raw_suffix=".json",
+        markdown=markdown + "\n",
+        fetch_method="serper_scrape",
+    )
 
 
 def _pdf_to_markdown(content: bytes, *, fallback_title: str) -> tuple[str, str]:

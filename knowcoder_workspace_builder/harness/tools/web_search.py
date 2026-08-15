@@ -25,6 +25,7 @@ from knowcoder_workspace_builder.runtime.workspace_sources import (
     source_category_dir,
 )
 from knowcoder_workspace_builder.runtime.virtual_paths import virtual_path_for
+from knowcoder_workspace_builder.runtime.credentials import service_api_key
 from knowcoder_workspace_builder.runtime.retry_policy import call_with_retries, is_external_api_error
 
 _SEARCH_LOCK = threading.Lock()
@@ -62,9 +63,7 @@ def web_search(query: str, num_results: int = 10, persist_results: bool = True) 
         )
 
     service_cfg = _load_serper_config()
-    file_key = _configured_secret(service_cfg.get("api_key", ""))
-    project_key = _configured_secret(_read_project_env_key("SERPER_API_KEY"))
-    api_key = project_key or _configured_secret(os.environ.get("SERPER_API_KEY", "")) or file_key
+    api_key = service_api_key("SERPER_API_KEY", service_cfg.get("api_key", ""))
     if not api_key:
         return json.dumps({"error": "SERPER_API_KEY not set"}, ensure_ascii=False)
 
@@ -144,40 +143,6 @@ def web_search(query: str, num_results: int = 10, persist_results: bool = True) 
 def _normalize_query(query: str) -> str:
     return " ".join(str(query or "").strip().lower().split())
 
-
-
-def _read_project_env_key(name: str) -> str:
-    """Read one key from the project .env without overriding process env."""
-    candidates = [
-        Path(os.environ.get("SCHEMA_WORKSPACE_PROJECT", "") or ""),
-        Path(os.environ.get("KNOWCODER_BUILDER_ROOT", "") or ""),
-        Path(__file__).resolve().parents[2],
-        Path(__file__).resolve().parents[3],
-        Path.cwd(),
-    ]
-    for root in candidates:
-        if not root:
-            continue
-        env_path = root / ".env"
-        if not env_path.is_file():
-            continue
-        try:
-            for line in env_path.read_text(encoding="utf-8").splitlines():
-                if not line.startswith(f"{name}="):
-                    continue
-                value = line.split("=", 1)[1].strip().strip('"').strip("'")
-                if value:
-                    return value
-        except OSError:
-            continue
-    return ""
-
-
-def _configured_secret(value: object) -> str:
-    text = str(value or "").strip()
-    if text.startswith("${") and text.endswith("}"):
-        return ""
-    return text
 
 
 def _web_evidence_dir() -> Path | None:
