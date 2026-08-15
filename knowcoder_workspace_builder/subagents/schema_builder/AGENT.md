@@ -46,11 +46,12 @@ Five consecutive failures stop the stage.
     Trace review changes to the current Schema and explicit revision requirements.
 26. Represent scalar properties as entity attributes.
 27. Keep distinct domain concepts in distinct entity types.
-28. Apply explicit revision requirements and user instructions.
-29. Populate removal lists exclusively with names present in the current Workspace Schema.
-30. Treat candidate names as proposals rather than persisted definitions.
-31. Call `save_schema` once with the complete optimized patch.
-32. Apply validation feedback together in one repair call when needed.
+28. Keep each field name unique within its entity across both attributes and relations.
+29. Apply explicit revision requirements and user instructions.
+30. Populate removal lists exclusively with names present in the current Workspace Schema.
+31. Treat candidate names as proposals rather than persisted definitions.
+32. Call `save_schema` once with the complete optimized patch.
+33. Apply the complete tool error context together in one repair call when needed.
 
 ## File Contract
 

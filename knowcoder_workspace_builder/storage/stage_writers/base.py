@@ -53,7 +53,11 @@ class BaseStageWriter:
         return json.dumps(payload, ensure_ascii=False)
 
     def failure_payload(self, exc: Exception) -> dict[str, Any]:
-        return {"ok": False, "error_type": self.error_type, "error": str(exc)}
+        payload: dict[str, Any] = {"ok": False, "error_type": self.error_type, "error": str(exc)}
+        if isinstance(exc, BuilderError):
+            payload["error_code"] = exc.detail.code
+            payload["error_context"] = dict(exc.detail.context)
+        return payload
 
     def execute(self, operation: Callable[[], dict[str, Any]]) -> str:
         try:

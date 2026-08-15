@@ -168,7 +168,11 @@ def web_search(
 
 @tool
 def web_search_batch(searches: list[dict[str, Any]]) -> str:
-    """Run multiple evidence searches in one tool call and bind each result to its declared step."""
+    """Run complementary evidence searches for one current step in one tool call.
+
+    Every search item must use the same step_index. Review the returned candidates,
+    fetch useful page bodies for that step, and then continue to the next step.
+    """
     if not isinstance(searches, list) or not searches:
         return json.dumps(
             {"ok": False, "error_type": "invalid_search_request", "error": "searches must be a non-empty list"},

@@ -23,8 +23,11 @@ Focus on `uncovered_step_indexes` when present.
 5. Process the confirmed steps in order.
    Finish the current step's Search, Fetch, and evidence review before starting the next step.
 6. Use complementary Search queries for the current step to discover authoritative candidates.
+   Every item in one `web_search_batch` belongs to that same step and uses the same `step_index`.
 7. Group the current step's useful URLs in one Fetch call. Let that Fetch call perform the bounded page concurrency.
-8. Review Search results before Fetch. Review Fetch results before moving to the next step.
+8. Treat Search titles and snippets as discovery hints.
+   Review fetched page bodies before deciding the current step's coverage.
+   Review Fetch results before moving to the next step.
 9. Retain exact `candidate_id` and `chunk_id` values from successful Fetch results for the final Save.
 10. Select chunks that support the complete question and their bound step.
 11. Move on when fetched bodies support the current step's requested facts.
@@ -64,7 +67,7 @@ A `covered` step has no `unresolved_gaps` item.
 ## Tools
 
 - `source_reader`: read supplied uploads.
-- `web_search_batch`: run complementary queries for the current step.
+- `web_search_batch`: run multiple complementary queries for one current step.
 - `web_search`: deepen one evidence gap.
 - `fetch_web_pages`: inspect candidate bodies and obtain candidate IDs.
 - `save_evidence_manifest`: adopt relevant candidates and save coverage.

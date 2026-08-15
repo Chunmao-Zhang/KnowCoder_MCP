@@ -398,7 +398,7 @@ class RunAttemptGuardMiddleware(AgentMiddleware):
         "workspace_readme_browser": "Read current Workspace metadata needed for problem clarification.",
         "source_reader": "Read the sources assigned to the current stage.",
         "web_search": "Resolve one declared evidence coverage gap.",
-        "web_search_batch": "Resolve multiple declared evidence coverage gaps in one batch.",
+        "web_search_batch": "Run complementary discovery queries for one current evidence step.",
         "fetch_web_pages": "Fetch complete content for explicit evidence URLs.",
         "save_problem_review": "Persist the complete problem decomposition candidate.",
         "save_evidence_manifest": "Persist completed evidence coverage and provenance.",
@@ -652,6 +652,7 @@ class FailedToolCircuitBreakerMiddleware(AgentMiddleware):
         "Start each line with its label and keep all three lines within 300 characters total. "
         "Put source names, URLs, comparisons, and selection details in tool arguments. "
         "Process confirmed steps in order and finish the current step before starting the next. "
+        "Use one web_search_batch only for complementary queries sharing the current step_index. "
         "Group the current step's useful URLs in one Fetch call and let that call handle bounded page concurrency. "
         "Review Search results before Fetch and Fetch results before moving to the next step. "
         "Move on when fetched bodies support the current step's requested facts; record a limitation for inaccessible gaps. "
@@ -770,13 +771,38 @@ class FailedToolCircuitBreakerMiddleware(AgentMiddleware):
                 else list(range(1, len(context.input.get("steps") or []) + 1))
             )
             completed_by_step = dict.fromkeys(indexes, 0)
-            records = SearchLedger(active_session_paths(), context.attempt_id).records()
+            paths = active_session_paths()
+            records = SearchLedger(paths, context.attempt_id).records()
             for record in records:
                 step_index = record.get("step_index")
                 if record.get("status") == "completed" and step_index in completed_by_step:
                     completed_by_step[step_index] += 1
+            fetched_by_step = dict.fromkeys(indexes, 0)
+            for record in FetchLedger(paths, context.attempt_id).records():
+                step_index = record.get("step_index")
+                response = record.get("response")
+                candidates = response.get("candidates") if isinstance(response, dict) else None
+                if (
+                    record.get("status") in {"completed", "partial"}
+                    and step_index in fetched_by_step
+                    and isinstance(candidates, list)
+                    and candidates
+                ):
+                    fetched_by_step[step_index] += 1
         except (BuilderError, KeyError, TypeError, ValueError):
             return request
+        searched_without_fetch = [
+            index
+            for index in indexes
+            if completed_by_step[index] >= 1 and fetched_by_step[index] == 0
+        ]
+        if searched_without_fetch:
+            return self._with_evidence_guide(
+                request,
+                f"Search candidates exist for step indexes {searched_without_fetch}, but no fetched page body "
+                "has been reviewed for those steps. Treat snippets as discovery hints. Fetch promising candidates "
+                "for the current step before deciding its coverage or saving the manifest.",
+            )
         if indexes and all(completed_by_step[index] >= 1 for index in indexes):
             return self._with_evidence_guide(
                 request,

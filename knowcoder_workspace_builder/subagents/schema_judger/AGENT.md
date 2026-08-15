@@ -24,6 +24,9 @@ Use `workspace_snapshot` for the current README and accepted stage files.
 - When `valid=true`, record syntax and structure as valid, then continue the coverage review.
 - When `valid=false`, use the exact validator findings in the revision requirements.
 - Review the complete Schema outline returned by the tool.
+- Judge whether the Schema can store the answer elements required by each confirmed step.
+- Treat unavailable facts and incomplete evidence as data limitations outside Schema review.
+- Express every revision requirement as a concrete entity, attribute, or relation-path change.
 - Split each confirmed requirement into the domain elements needed by the final deliverable.
 - Identify concrete objects and events that need independent comparison, repeated observations, or relations.
 - Keep the review scope aligned with confirmed elements and final-output paths.
