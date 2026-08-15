@@ -791,7 +791,9 @@ def stream_agent(
 
     agent = build_agent(agent_cfg, harness_root, registry=registry, tools=tools, harness_config=harness_config)
 
-    config = {"configurable": {"thread_id": thread_id or "default"}}
+    config: dict[str, Any] = {"configurable": {"thread_id": thread_id or "default"}}
+    if agent_cfg.max_steps is not None:
+        config["recursion_limit"] = int(agent_cfg.max_steps)
 
     # ── stream_mode=["messages","values"] + subgraphs=True ─────────────────────
     # "messages": 每个 token chunk 按到来顺序立即推送，meta 含 lc_agent_name
