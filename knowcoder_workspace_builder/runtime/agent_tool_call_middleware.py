@@ -259,19 +259,14 @@ class StageCompletionContractMiddleware(AgentMiddleware):
         )
 
     @classmethod
-    def _correction_limit(cls, stage: str) -> int:
-        if stage != "evidence":
-            return cls.MAX_CORRECTIONS
-        try:
-            steps = active_invocation_context().input.get("steps")
-        except BuilderError:
-            return cls.MAX_CORRECTIONS
-        step_count = len(steps) if isinstance(steps, list) else 0
-        # Some compatible models naturally end a model turn after each Search
-        # or Fetch phase.  Give every validated step one continuation for each
-        # phase plus one final persistence opportunity instead of assuming two
-        # model continuations are enough for every research scope.
-        return max(cls.MAX_CORRECTIONS, step_count * 2 + 1)
+    def _consecutive_correction_count(cls, messages: list[Any]) -> int:
+        count = 0
+        for message in reversed(messages):
+            if isinstance(message, ToolMessage):
+                break
+            if isinstance(message, SystemMessage) and cls._CORRECTION_MARKER in str(message.content or ""):
+                count += 1
+        return count
 
     @staticmethod
     def _evidence_circuit_open(messages: list[Any]) -> bool:
@@ -331,7 +326,12 @@ class StageCompletionContractMiddleware(AgentMiddleware):
             return None
         if stage == "evidence" and self._evidence_circuit_open(messages):
             return None
-        if self._correction_count(messages) >= self._correction_limit(stage):
+        correction_count = (
+            self._consecutive_correction_count(messages)
+            if stage == "evidence"
+            else self._correction_count(messages)
+        )
+        if correction_count >= self.MAX_CORRECTIONS:
             return None
         return {
             "messages": [SystemMessage(content=self._instruction(stage, messages, tool_name))],
