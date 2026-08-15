@@ -152,7 +152,14 @@ class PersistenceDoneStopMiddleware(AgentMiddleware):
 
 
 class EvidenceToolBatchMiddleware(AgentMiddleware):
-    """Keep compatible evidence calls and defer later workflow phases."""
+    """Execute one evidence phase per model turn without rewriting model output.
+
+    Thinking providers require an assistant message and its reasoning payload to
+    be replayed unchanged on the next request.  Phase control therefore happens
+    at tool execution time: every requested tool keeps its protocol pair, while
+    calls from a later phase receive an explicit error and can be retried after
+    the current phase has completed.
+    """
 
     _SEARCH_TOOLS = frozenset({"web_search", "web_search_batch"})
     _FETCH_TOOLS = frozenset({"fetch_web_pages"})
@@ -160,40 +167,50 @@ class EvidenceToolBatchMiddleware(AgentMiddleware):
     _PHASES = (_SEARCH_TOOLS, _FETCH_TOOLS, _SAVE_TOOLS)
 
     @classmethod
-    def _filter_message(cls, message: AIMessage) -> AIMessage:
-        calls = list(message.tool_calls or [])
+    def _active_phase(cls, messages: list[Any]) -> frozenset[str] | None:
+        current = next(
+            (message for message in reversed(messages) if isinstance(message, AIMessage)),
+            None,
+        )
+        calls = list(current.tool_calls or []) if current is not None else []
         present_phases = [phase for phase in cls._PHASES if any(call.get("name") in phase for call in calls)]
-        if len(present_phases) <= 1:
-            return message
-        active_phase = present_phases[0]
-        retained = [call for call in calls if call.get("name") in active_phase]
-        deferred = [str(call.get("name") or "") for call in calls if call not in retained]
-        phase_name = "Search" if active_phase == cls._SEARCH_TOOLS else "Fetch"
-        note = (
-            f"{phase_name} calls were retained. Review their results before calling "
-            f"{', '.join(dict.fromkeys(deferred))}."
-        )
-        content = str(message.content or "").strip()
-        return message.model_copy(
-            update={
-                "content": "\n\n".join(part for part in (content, note) if part),
-                "tool_calls": retained,
-            }
-        )
+        return present_phases[0] if len(present_phases) > 1 else None
 
     @classmethod
-    def _filter_response(cls, response: ModelResponse) -> ModelResponse:
-        result = [
-            cls._filter_message(message) if isinstance(message, AIMessage) else message
-            for message in response.result
-        ]
-        return ModelResponse(result=result, structured_response=response.structured_response)
+    def _deferred_error(cls, request: ToolCallRequest) -> ToolMessage | None:
+        active_phase = cls._active_phase(_state_messages(request.state))
+        name = str(request.tool_call.get("name") or "")
+        if active_phase is None or name in active_phase:
+            return None
+        phase_name = "Search" if active_phase == cls._SEARCH_TOOLS else "Fetch"
+        return _tool_error(
+            request,
+            "evidence_phase_deferred",
+            (
+                f"{name} belongs to a later evidence phase. Complete and review the current "
+                f"{phase_name} results, then call {name} in the next model turn."
+            ),
+        )
 
     def wrap_model_call(self, request: ModelRequest, handler: Callable) -> ModelResponse:
-        return self._filter_response(handler(request))
+        return handler(request)
 
     async def awrap_model_call(self, request: ModelRequest, handler: Callable) -> ModelResponse:
-        return self._filter_response(await handler(request))
+        return await handler(request)
+
+    def wrap_tool_call(
+        self,
+        request: ToolCallRequest,
+        handler: Callable[[ToolCallRequest], ToolMessage | Command],
+    ) -> ToolMessage | Command:
+        return self._deferred_error(request) or handler(request)
+
+    async def awrap_tool_call(
+        self,
+        request: ToolCallRequest,
+        handler: Callable,
+    ) -> ToolMessage | Command:
+        return self._deferred_error(request) or await handler(request)
 
 
 class StageCompletionContractMiddleware(AgentMiddleware):
