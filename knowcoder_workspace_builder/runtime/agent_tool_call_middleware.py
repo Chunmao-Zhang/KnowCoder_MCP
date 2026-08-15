@@ -267,11 +267,11 @@ class StageCompletionContractMiddleware(AgentMiddleware):
         except BuilderError:
             return cls.MAX_CORRECTIONS
         step_count = len(steps) if isinstance(steps, list) else 0
-        # Some compatible models naturally end a model turn after assessing one
-        # confirmed step.  Give each validated step one continuation opportunity
-        # plus one final persistence opportunity instead of assuming two model
-        # continuations are enough for every research scope.
-        return max(cls.MAX_CORRECTIONS, step_count + 1)
+        # Some compatible models naturally end a model turn after each Search
+        # or Fetch phase.  Give every validated step one continuation for each
+        # phase plus one final persistence opportunity instead of assuming two
+        # model continuations are enough for every research scope.
+        return max(cls.MAX_CORRECTIONS, step_count * 2 + 1)
 
     @staticmethod
     def _evidence_circuit_open(messages: list[Any]) -> bool:
