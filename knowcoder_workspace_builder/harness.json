@@ -62,7 +62,7 @@
         "SummarizationMiddleware"
       ]
     },
-    "max_steps": 200
+    "max_steps": 1000
   },
   "agents": [
     {
